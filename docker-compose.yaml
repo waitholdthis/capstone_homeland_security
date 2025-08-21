@@ -1,0 +1,11 @@
+version: '3'
+
+services:
+  vite-app:
+    build: ui/vite-project/
+    ports: 
+      - '8080:5173'
+  server-app:
+    build: api/
+    ports: 
+      - '80:8000'

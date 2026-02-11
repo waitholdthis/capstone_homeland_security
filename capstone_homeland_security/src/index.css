@@ -1,0 +1,216 @@
+@import "tailwindcss";
+
+/* Semantic color tokens — dark mode defaults */
+:root {
+  --color-surface: #020617;
+  --color-surface-alt: rgba(15,23,42,0.5);
+  --color-surface-inset: rgba(30,41,59,0.3);
+  --color-surface-overlay: rgba(15,23,42,0.9);
+  --color-line: #1e293b;
+  --color-line-subtle: rgba(30,41,59,0.6);
+  --color-heading: #f1f5f9;
+  --color-body: #e2e8f0;
+  --color-secondary: #94a3b8;
+  --color-muted: #64748b;
+  --color-faint: #475569;
+
+  --classification-bg: #1a1a2e;
+  --classification-border: #2a2a4a;
+  --scrollbar-track: #0f172a;
+  --scrollbar-thumb: #1e293b;
+  --scrollbar-thumb-hover: #334155;
+  --advisory-stripe: rgba(6, 182, 212, 0.04);
+  --advisory-border: rgba(6, 182, 212, 0.2);
+  --grid-line: rgba(6, 182, 212, 0.015);
+}
+
+/* Light mode overrides */
+:root.light {
+  --color-surface: #f8fafc;
+  --color-surface-alt: #ffffff;
+  --color-surface-inset: #f1f5f9;
+  --color-surface-overlay: rgba(255,255,255,0.95);
+  --color-line: #e2e8f0;
+  --color-line-subtle: rgba(226,232,240,0.7);
+  --color-heading: #0f172a;
+  --color-body: #1e293b;
+  --color-secondary: #475569;
+  --color-muted: #64748b;
+  --color-faint: #94a3b8;
+
+  --classification-bg: #e2e8f0;
+  --classification-border: #cbd5e1;
+  --scrollbar-track: #f1f5f9;
+  --scrollbar-thumb: #cbd5e1;
+  --scrollbar-thumb-hover: #94a3b8;
+  --advisory-stripe: rgba(6, 182, 212, 0.06);
+  --advisory-border: rgba(6, 182, 212, 0.3);
+  --grid-line: rgba(6, 182, 212, 0.03);
+}
+
+/* Register semantic colors as Tailwind utilities */
+@theme inline {
+  --font-sans: 'Inter', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --color-surface: var(--color-surface);
+  --color-surface-alt: var(--color-surface-alt);
+  --color-surface-inset: var(--color-surface-inset);
+  --color-surface-overlay: var(--color-surface-overlay);
+  --color-line: var(--color-line);
+  --color-line-subtle: var(--color-line-subtle);
+  --color-heading: var(--color-heading);
+  --color-body: var(--color-body);
+  --color-secondary: var(--color-secondary);
+  --color-muted: var(--color-muted);
+  --color-faint: var(--color-faint);
+  --color-cyan-glow: #06b6d4;
+  --color-cbrn-amber: #f59e0b;
+  --color-terrorism-blue: #3b82f6;
+  --color-disaster-green: #22c55e;
+}
+
+/* Classification banner */
+.classification-banner {
+  background: var(--classification-bg);
+  border-bottom: 1px solid var(--classification-border);
+  text-align: center;
+  padding: 3px 0;
+  letter-spacing: 0.15em;
+  font-size: 10px;
+  font-weight: 600;
+  color: #4ade80;
+  text-transform: uppercase;
+  font-family: 'JetBrains Mono', monospace;
+  user-select: none;
+}
+:root.light .classification-banner {
+  color: #16a34a;
+}
+
+/* Animations */
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* Advisory banner */
+.advisory-banner {
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 10px,
+    var(--advisory-stripe) 10px,
+    var(--advisory-stripe) 20px
+  );
+  border: 1px solid var(--advisory-border);
+}
+
+/* Section headers */
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--color-line);
+  margin-bottom: 16px;
+}
+.section-header::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to right, var(--color-line), transparent);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+
+/* Form focus */
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: rgba(6, 182, 212, 0.5) !important;
+  box-shadow: 0 0 0 1px rgba(6, 182, 212, 0.15);
+}
+input[type="checkbox"] { accent-color: #10b981; cursor: pointer; }
+
+/* Stat card hover */
+.stat-card { transition: border-color 0.2s, transform 0.15s; }
+.stat-card:hover { transform: translateY(-1px); }
+
+/* Grid overlay */
+.grid-overlay {
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* Leaflet dark theme overrides */
+.leaflet-popup-content-wrapper {
+  background: rgba(15, 23, 42, 0.95) !important;
+  color: var(--color-body) !important;
+  border-radius: 8px !important;
+  border: 1px solid var(--color-line) !important;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.5) !important;
+  backdrop-filter: blur(12px);
+}
+.leaflet-popup-tip { background: rgba(15, 23, 42, 0.95) !important; }
+.leaflet-popup-close-button { color: var(--color-muted) !important; }
+.leaflet-popup-close-button:hover { color: var(--color-body) !important; }
+.leaflet-tooltip {
+  background: rgba(15, 23, 42, 0.9) !important;
+  color: var(--color-body) !important;
+  border: 1px solid var(--color-line) !important;
+  border-radius: 4px !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
+}
+.leaflet-tooltip-top::before { border-top-color: rgba(15, 23, 42, 0.9) !important; }
+.leaflet-tooltip-bottom::before { border-bottom-color: rgba(15, 23, 42, 0.9) !important; }
+.leaflet-tooltip-left::before { border-left-color: rgba(15, 23, 42, 0.9) !important; }
+.leaflet-tooltip-right::before { border-right-color: rgba(15, 23, 42, 0.9) !important; }
+.leaflet-control-zoom a {
+  background: rgba(15, 23, 42, 0.9) !important;
+  color: var(--color-body) !important;
+  border-color: var(--color-line) !important;
+}
+.leaflet-control-zoom a:hover { background: rgba(30, 41, 59, 0.9) !important; }
+.leaflet-control-attribution {
+  background: rgba(15, 23, 42, 0.7) !important;
+  color: var(--color-faint) !important;
+  font-size: 9px !important;
+}
+.leaflet-control-attribution a { color: var(--color-muted) !important; }
+
+/* Light mode Leaflet overrides */
+:root.light .leaflet-popup-content-wrapper {
+  background: rgba(255, 255, 255, 0.97) !important;
+  color: var(--color-body) !important;
+  border-color: var(--color-line) !important;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.1) !important;
+}
+:root.light .leaflet-popup-tip { background: rgba(255, 255, 255, 0.97) !important; }
+:root.light .leaflet-tooltip {
+  background: rgba(255, 255, 255, 0.95) !important;
+  color: var(--color-body) !important;
+  border-color: var(--color-line) !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08) !important;
+}
+:root.light .leaflet-tooltip-top::before { border-top-color: rgba(255, 255, 255, 0.95) !important; }
+:root.light .leaflet-tooltip-bottom::before { border-bottom-color: rgba(255, 255, 255, 0.95) !important; }
+:root.light .leaflet-tooltip-left::before { border-left-color: rgba(255, 255, 255, 0.95) !important; }
+:root.light .leaflet-tooltip-right::before { border-right-color: rgba(255, 255, 255, 0.95) !important; }
+:root.light .leaflet-control-zoom a {
+  background: rgba(255, 255, 255, 0.95) !important;
+  color: var(--color-body) !important;
+  border-color: var(--color-line) !important;
+}
+:root.light .leaflet-control-zoom a:hover { background: var(--color-surface-inset) !important; }
+:root.light .leaflet-control-attribution {
+  background: rgba(255, 255, 255, 0.8) !important;
+  color: var(--color-faint) !important;
+}

@@ -26,6 +26,7 @@ function incidentReducer(state, action) {
       const incident = {
         ...action.payload,
         id: action.payload.id || crypto.randomUUID(),
+        coordinates: action.payload.coordinates || null,
         createdAt: new Date().toISOString(),
         status: 'active',
         decisions: [],
@@ -182,6 +183,10 @@ function incidentReducer(state, action) {
         ...state,
         incidents: state.incidents.filter((inc) => inc.id !== action.payload),
       }
+      break
+    }
+    case 'CLEAR_ALL_INCIDENTS': {
+      newState = { incidents: [] }
       break
     }
     default:

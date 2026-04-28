@@ -969,6 +969,7 @@ export default function App() {
   const [impactAnalysis, setImpactAnalysis] = useState(null);
   const [impactMissile, setImpactMissile] = useState(null);
   const impactEntitiesRef = useRef([]);
+  const impactAnimationRef = useRef({ raf: null, entity: null, startWall: null, path: [] });
   const impactClickRef = useRef(null); // first click = launch
 
   // Missile sim: first click = launch, second click = target
@@ -1101,6 +1102,76 @@ export default function App() {
     setSelectedMapItem(null);
   }, [refreshWaypointPreview, selectedMissile, threatMode]);
 
+  const stopImpactAnimation = useCallback((removeEntity = true) => {
+    if (impactAnimationRef.current.raf) {
+      cancelAnimationFrame(impactAnimationRef.current.raf);
+    }
+    if (removeEntity && impactAnimationRef.current.entity) {
+      viewerRef.current?.entities.remove(impactAnimationRef.current.entity);
+    }
+    impactAnimationRef.current = { raf: null, entity: null, startWall: null, path: [] };
+  }, []);
+
+  const startImpactAnimation = useCallback((analysis, missile) => {
+    const viewer = viewerRef.current;
+    const path = analysis?.trajectory_path ?? [];
+    if (!viewer || path.length < 2) return;
+
+    stopImpactAnimation();
+
+    const color = cesiumColorFromHex(missile?.color ?? '#FF3300');
+    const start = path[0];
+    const mover = viewer.entities.add({
+      position: Cesium.Cartesian3.fromDegrees(start.lon, start.lat, start.alt),
+      point: {
+        pixelSize: missile?.pixelSize ?? 14,
+        color,
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: 2,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+      label: {
+        text: `${missile?.name ?? 'THREAT'}\nIN FLIGHT`,
+        font: 'bold 10px monospace',
+        fillColor: color,
+        outlineColor: Cesium.Color.BLACK,
+        outlineWidth: 2,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        pixelOffset: new Cesium.Cartesian2(0, -24),
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+    });
+    impactEntitiesRef.current.push(mover);
+
+    const endTime = path[path.length - 1].time_s ?? analysis.flight_time_s ?? 0;
+    impactAnimationRef.current = {
+      raf: null,
+      entity: mover,
+      startWall: performance.now(),
+      path,
+    };
+
+    const tick = () => {
+      const elapsed = (performance.now() - impactAnimationRef.current.startWall) / 1000;
+      const point = pathPointAtTime(path, elapsed);
+      if (point) {
+        mover.position = Cesium.Cartesian3.fromDegrees(point.lon, point.lat, point.alt);
+        const remaining = Math.max(endTime - elapsed, 0);
+        mover.label.text = remaining <= 0.05
+          ? `${missile?.name ?? 'THREAT'}\nIMPACT`
+          : `${missile?.name ?? 'THREAT'}\nTTI ${remaining.toFixed(1)}s`;
+      }
+
+      if (elapsed < endTime) {
+        impactAnimationRef.current.raf = requestAnimationFrame(tick);
+      } else {
+        impactAnimationRef.current.raf = null;
+      }
+    };
+
+    impactAnimationRef.current.raf = requestAnimationFrame(tick);
+  }, [stopImpactAnimation]);
+
   // ---- Cesium init ----
   useEffect(() => {
     if (!cesiumContainer.current) return;
@@ -1115,6 +1186,7 @@ export default function App() {
     });
     viewerRef.current = viewer;
     return () => {
+      if (impactAnimationRef.current.raf) cancelAnimationFrame(impactAnimationRef.current.raf);
       if (handlerRef.current) handlerRef.current.destroy();
       viewer.destroy();
     };
@@ -1607,6 +1679,7 @@ export default function App() {
 
         if (!impactClickRef.current) {
           // Clear previous impact entities
+          stopImpactAnimation(false);
           impactEntitiesRef.current.forEach(e => viewer.entities.remove(e));
           impactEntitiesRef.current = [];
           setImpactAnalysis(null);
@@ -1731,11 +1804,12 @@ export default function App() {
 
           setImpactAnalysis(analysis);
           setImpactMissile(missile);
+          startImpactAnimation(analysis, missile);
         }
         return;
       }
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
-  }, [mode, faction, selectedUnit, selectedCUAS, selectedLayerAsset, selectedDrone, selectedMissile, threatMode, refreshWaypointPreview, selectMapItem]);
+  }, [mode, faction, selectedUnit, selectedCUAS, selectedLayerAsset, selectedDrone, selectedMissile, threatMode, refreshWaypointPreview, selectMapItem, startImpactAnimation, stopImpactAnimation]);
 
   // ---- Launch simulation ----
   const handleSimulate = useCallback(async () => {
@@ -1980,6 +2054,7 @@ export default function App() {
     trailRef.current = null;
     waypointsRef.current = [];
     missileClickRef.current = null;
+    stopImpactAnimation(false);
     impactEntitiesRef.current.forEach(e => viewer.entities.remove(e));
     impactEntitiesRef.current = [];
     impactClickRef.current = null;
@@ -1992,7 +2067,7 @@ export default function App() {
     setSelectedMapItem(null);
     setWaypointCount(0);
     firstPointRef.current = null;
-  }, [handleStop]);
+  }, [handleStop, stopImpactAnimation]);
 
   useEffect(() => { simRef.current.speed = simSpeed; }, [simSpeed]);
 
@@ -2068,6 +2143,7 @@ export default function App() {
         onClose={() => {
           setImpactAnalysis(null);
           setImpactMissile(null);
+          stopImpactAnimation(false);
           impactEntitiesRef.current.forEach(e => viewerRef.current?.entities.remove(e));
           impactEntitiesRef.current = [];
           impactClickRef.current = null;

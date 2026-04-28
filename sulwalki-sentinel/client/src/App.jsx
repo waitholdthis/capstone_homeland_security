@@ -726,6 +726,7 @@ function markDraggable(entity, options = {}) {
   entity._waypointIndex = options.waypointIndex;
   entity._dragDisplayOffsetM = options.displayOffsetM ?? 0;
   entity._waypointAltitudeOffsetM = options.waypointAltitudeOffsetM ?? 0;
+  entity._deleteLabel = options.label ?? options.kind ?? 'map item';
   return entity;
 }
 
@@ -810,6 +811,7 @@ export default function App() {
   const firstPointRef = useRef(null);
   const losEntitiesRef = useRef([]);
   const dragRef = useRef({ active: false, moved: false, group: null, entity: null });
+  const selectedMapItemRef = useRef(null);
 
   const [mode, setMode] = useState('los');
   const [faction, setFaction] = useState(FACTIONS.FRIENDLY);
@@ -819,6 +821,7 @@ export default function App() {
   const [selectedMissile, setSelectedMissile] = useState(MISSILE_THREATS[0]);
   const [threatMode, setThreatMode] = useState('uas'); // 'uas' | 'missile'
   const [planningEnv, setPlanningEnv] = useState(DEFAULT_PLANNING_ENV);
+  const [selectedMapItem, setSelectedMapItem] = useState(null);
   const [losAnalysis, setLosAnalysis] = useState(null);
   const [losPending, setLosPending] = useState(false);
   const [losAwaitingTarget, setLosAwaitingTarget] = useState(false);
@@ -854,9 +857,12 @@ export default function App() {
 
   const refreshWaypointPreview = useCallback(() => {
     const viewer = viewerRef.current;
-    if (!viewer || waypointsRef.current.length < 2) return;
+    if (!viewer) return;
 
     if (pathLineRef.current) viewer.entities.remove(pathLineRef.current);
+    pathLineRef.current = null;
+
+    if (waypointsRef.current.length < 2) return;
 
     if (threatMode === 'missile') {
       const launch = waypointsRef.current[0];
@@ -883,6 +889,64 @@ export default function App() {
     });
   }, [selectedMissile, threatMode]);
 
+  const selectMapItem = useCallback((entity) => {
+    if (!entity?._draggable) {
+      selectedMapItemRef.current = null;
+      setSelectedMapItem(null);
+      return;
+    }
+
+    const item = {
+      group: entity._dragGroup,
+      kind: entity._dragKind,
+      label: entity._deleteLabel ?? entity._dragKind ?? 'map item',
+    };
+    selectedMapItemRef.current = item;
+    setSelectedMapItem(item);
+  }, []);
+
+  const deleteSelectedMapItem = useCallback(() => {
+    const viewer = viewerRef.current;
+    const selected = selectedMapItemRef.current;
+    if (!viewer || !selected) return;
+
+    const groupEntities = viewer.entities.values.filter(e => e._dragGroup === selected.group);
+    const waypointIndexes = groupEntities
+      .map(e => e._waypointIndex)
+      .filter(index => index != null)
+      .sort((a, b) => b - a);
+
+    groupEntities.forEach(entity => {
+      viewer.entities.remove(entity);
+      placedRef.current = placedRef.current.filter(e => e !== entity);
+      waypointEntitiesRef.current = waypointEntitiesRef.current.filter(e => e !== entity);
+    });
+
+    waypointIndexes.forEach(index => {
+      waypointsRef.current.splice(index, 1);
+    });
+
+    if (waypointIndexes.length > 0) {
+      waypointEntitiesRef.current.forEach((entity, index) => {
+        entity._waypointIndex = index;
+        if (entity.label) {
+          const text = threatMode === 'missile'
+            ? (index === 0 ? `LAUNCH: ${selectedMissile?.name ?? 'MISSILE'}` : 'TARGET')
+            : `WP${index + 1}`;
+          entity.label.text = text;
+        }
+      });
+      setWaypointCount(waypointsRef.current.length);
+      if (threatMode === 'missile' && waypointsRef.current.length < 2) {
+        missileClickRef.current = waypointsRef.current[0] ?? null;
+      }
+      refreshWaypointPreview();
+    }
+
+    selectedMapItemRef.current = null;
+    setSelectedMapItem(null);
+  }, [refreshWaypointPreview, selectedMissile, threatMode]);
+
   // ---- Cesium init ----
   useEffect(() => {
     if (!cesiumContainer.current) return;
@@ -902,6 +966,24 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+      const target = event.target;
+      const isTyping = target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || target?.isContentEditable;
+      if (isTyping) return;
+
+      deleteSelectedMapItem();
+      event.preventDefault();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [deleteSelectedMapItem]);
+
   // ---- Click handler ----
   useEffect(() => {
     const viewer = viewerRef.current;
@@ -916,6 +998,7 @@ export default function App() {
       const entity = picked?.id;
       if (!entity?._draggable) return;
 
+      selectMapItem(entity);
       dragRef.current = {
         active: true,
         moved: false,
@@ -971,7 +1054,11 @@ export default function App() {
     handler.setInputAction(async (click) => {
       if (dragRef.current.moved) return;
       const pickedEntity = viewer.scene.pick(click.position)?.id;
-      if (pickedEntity?._draggable) return;
+      if (pickedEntity?._draggable) {
+        selectMapItem(pickedEntity);
+        return;
+      }
+      selectMapItem(null);
 
       const cartesian = viewer.scene.pickPosition(click.position);
       if (!Cesium.defined(cartesian)) return;
@@ -1148,7 +1235,7 @@ export default function App() {
           position: cartesian,
           billboard: { image, verticalOrigin: Cesium.VerticalOrigin.BOTTOM, scale: 1.0, disableDepthTestDistance: Number.POSITIVE_INFINITY },
           label: { text: selectedUnit.label, font: '11px monospace', pixelOffset: new Cesium.Cartesian2(0, -(canvas.height + 4)), fillColor: faction === FACTIONS.FRIENDLY ? Cesium.Color.CYAN : Cesium.Color.RED, outlineColor: Cesium.Color.BLACK, outlineWidth: 2, style: Cesium.LabelStyle.FILL_AND_OUTLINE },
-        }), { kind: 'unit' }));
+        }), { kind: 'unit', label: selectedUnit.label }));
         return;
       }
 
@@ -1166,7 +1253,7 @@ export default function App() {
             position: cartesian,
             billboard: { image: img, verticalOrigin: Cesium.VerticalOrigin.BOTTOM, disableDepthTestDistance: Number.POSITIVE_INFINITY },
             label: { text: selectedCUAS.name, font: 'bold 11px monospace', pixelOffset: new Cesium.Cartesian2(0, -42), fillColor: cColor, outlineColor: Cesium.Color.BLACK, outlineWidth: 2, style: Cesium.LabelStyle.FILL_AND_OUTLINE },
-          }), { kind: 'cuas', group: dragGroup });
+          }), { kind: 'cuas', group: dragGroup, label: selectedCUAS.name });
           b._cuasData = {
             id: selectedCUAS.id,
             name: selectedCUAS.name,
@@ -1193,7 +1280,7 @@ export default function App() {
               outlineWidth: 1,
               slicePartitions: 32, stackPartitions: 16, subdivisions: 64,
             },
-          }), { kind: 'cuas', group: dragGroup });
+          }), { kind: 'cuas', group: dragGroup, label: selectedCUAS.name });
           ring._cuasData = {
             id: selectedCUAS.id,
             name: selectedCUAS.name,
@@ -1225,6 +1312,7 @@ export default function App() {
           label: { text: `WP${newCount}`, font: '10px monospace', pixelOffset: new Cesium.Cartesian2(0, -16), fillColor: Cesium.Color.ORANGERED },
         }), {
           kind: 'waypoint',
+          label: `WP${newCount}`,
           waypointIndex: newCount - 1,
           waypointAltitudeOffsetM: selectedDrone?.aglMeters ?? 100,
           displayOffsetM: selectedDrone?.aglMeters ?? 100,
@@ -1256,7 +1344,7 @@ export default function App() {
             position: Cesium.Cartesian3.fromDegrees(lon, lat, terrainAlt + 10),
             point: { pixelSize: 14, color: Cesium.Color.RED, outlineColor: Cesium.Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
             label: { text: `LAUNCH: ${selectedMissile?.name ?? 'MISSILE'}`, font: 'bold 12px monospace', pixelOffset: new Cesium.Cartesian2(0, -22), fillColor: Cesium.Color.RED, outlineColor: Cesium.Color.BLACK, outlineWidth: 2, style: Cesium.LabelStyle.FILL_AND_OUTLINE },
-          }), { kind: 'waypoint', waypointIndex: 0, displayOffsetM: 10 });
+          }), { kind: 'waypoint', label: `LAUNCH: ${selectedMissile?.name ?? 'MISSILE'}`, waypointIndex: 0, displayOffsetM: 10 });
           waypointEntitiesRef.current.push(e);
           setWaypointCount(1);
         } else {
@@ -1269,7 +1357,7 @@ export default function App() {
             position: Cesium.Cartesian3.fromDegrees(lon, lat, terrainAlt + 10),
             point: { pixelSize: 12, color: Cesium.Color.YELLOW, outlineColor: Cesium.Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
             label: { text: 'TARGET', font: 'bold 12px monospace', pixelOffset: new Cesium.Cartesian2(0, -22), fillColor: Cesium.Color.YELLOW, outlineColor: Cesium.Color.BLACK, outlineWidth: 2, style: Cesium.LabelStyle.FILL_AND_OUTLINE },
-          }), { kind: 'waypoint', waypointIndex: 1, displayOffsetM: 10 });
+          }), { kind: 'waypoint', label: 'TARGET', waypointIndex: 1, displayOffsetM: 10 });
           waypointEntitiesRef.current.push(e);
           setWaypointCount(2);
 
@@ -1427,7 +1515,7 @@ export default function App() {
         return;
       }
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
-  }, [mode, faction, selectedUnit, selectedCUAS, selectedDrone, selectedMissile, threatMode, refreshWaypointPreview]);
+  }, [mode, faction, selectedUnit, selectedCUAS, selectedDrone, selectedMissile, threatMode, refreshWaypointPreview, selectMapItem]);
 
   // ---- Launch simulation ----
   const handleSimulate = useCallback(async () => {
@@ -1680,6 +1768,8 @@ export default function App() {
     setLosAnalysis(null);
     setLosPending(false);
     setLosAwaitingTarget(false);
+    selectedMapItemRef.current = null;
+    setSelectedMapItem(null);
     setWaypointCount(0);
     firstPointRef.current = null;
   }, [handleStop]);
@@ -1701,6 +1791,39 @@ export default function App() {
         onSimulate={handleSimulate}
         onClearAll={handleClearAll}
       />
+      {selectedMapItem && (
+        <div style={{
+          position: 'absolute',
+          top: 20,
+          left: 320,
+          zIndex: 16,
+          background: 'rgba(3, 8, 15, 0.94)',
+          border: '1px solid #FFAA0044',
+          color: '#FFAA00',
+          fontFamily: 'monospace',
+          fontSize: 11,
+          padding: '8px 10px',
+          boxShadow: '0 0 18px #FFAA0022',
+        }}>
+          SELECTED: <span style={{ color: '#F2D38A' }}>{selectedMapItem.label}</span>
+          <button
+            onClick={deleteSelectedMapItem}
+            style={{
+              marginLeft: 10,
+              background: '#331111',
+              border: '1px solid #AA3333',
+              color: '#FF7777',
+              fontFamily: 'monospace',
+              fontSize: 10,
+              padding: '3px 7px',
+              cursor: 'pointer',
+            }}
+          >
+            DELETE
+          </button>
+          <span style={{ color: '#667788', marginLeft: 8 }}>or press Del</span>
+        </div>
+      )}
       <SimulationControls
         active={simActive}
         playing={simPlaying}

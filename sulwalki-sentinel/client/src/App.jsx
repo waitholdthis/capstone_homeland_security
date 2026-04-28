@@ -1493,16 +1493,21 @@ export default function App() {
         };
         entities.push(marker);
 
+        const radiusM = layer.rangeKm * 1000;
+        const ceilingM = Math.max((layer.altitudeFtAGL ?? 0) * 0.3048, radiusM * 0.12, 150);
         const ring = markDraggable(viewer.entities.add({
           position: cartesian,
-          ellipse: {
-            semiMajorAxis: layer.rangeKm * 1000,
-            semiMinorAxis: layer.rangeKm * 1000,
-            material: new Cesium.ColorMaterialProperty(layerColor.withAlpha(0.055)),
+          ellipsoid: {
+            radii: new Cesium.Cartesian3(radiusM, radiusM, ceilingM),
+            minimumCone: 0,
+            maximumCone: Cesium.Math.PI_OVER_TWO,
+            material: new Cesium.ColorMaterialProperty(layerColor.withAlpha(0.075)),
             outline: true,
             outlineColor: layerColor.withAlpha(0.75),
             outlineWidth: 1.5,
-            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            slicePartitions: 48,
+            stackPartitions: 20,
+            subdivisions: 96,
           },
         }), { kind: 'layer', group: dragGroup, label: layer.name });
         ring._cuasData = { ...marker._cuasData };

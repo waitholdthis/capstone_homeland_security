@@ -355,6 +355,8 @@ export default function ToolPanel({
   faction, setFaction,
   selectedUnit, setSelectedUnit,
   selectedCUAS, setSelectedCUAS,
+  detectionLayerAssets,
+  selectedLayerAsset, setSelectedLayerAsset,
   selectedDrone, setSelectedDrone,
   selectedMissile, setSelectedMissile,
   threatMode, setThreatMode,
@@ -398,6 +400,7 @@ export default function ToolPanel({
         <BTN active={mode === 'place-cuas'} onClick={() => setMode('place-cuas')}>[03] PLACE C-UAS SYSTEM</BTN>
         <BTN active={mode === 'draw-path'} onClick={() => setMode('draw-path')}>[04] SIMULATE THREAT</BTN>
         <BTN active={mode === 'impact-analysis'} onClick={() => setMode('impact-analysis')}>[05] IMPACT ANALYSIS</BTN>
+        <BTN active={mode === 'place-layer'} onClick={() => setMode('place-layer')}>[06] DETECTION LAYERS</BTN>
       </Section>
 
       {/* ── UNIT PLACEMENT ── */}
@@ -431,6 +434,40 @@ export default function ToolPanel({
             <BTN key={u.id} active={selectedUnit?.id === u.id} onClick={() => setSelectedUnit(u)}>
               {u.label}
             </BTN>
+          ))}
+        </Section>
+      )}
+
+      {mode === 'place-layer' && (
+        <Section title="Detection Architecture">
+          <div style={{ color: '#667788', fontFamily: 'monospace', fontSize: 9, lineHeight: 1.5, marginBottom: 8 }}>
+            Build layered detection using radar, RF, EO/IR, acoustic, and cyber/OSINT assets. Click map to place selected layer.
+          </div>
+          {detectionLayerAssets.map(layer => (
+            <button
+              key={layer.id}
+              onClick={() => setSelectedLayerAsset(layer)}
+              style={{
+                width: '100%',
+                padding: '7px 8px',
+                marginBottom: 5,
+                background: selectedLayerAsset?.id === layer.id ? `${layer.color}22` : 'transparent',
+                border: `1px solid ${selectedLayerAsset?.id === layer.id ? layer.color : '#1A2A3A'}`,
+                color: selectedLayerAsset?.id === layer.id ? layer.color : '#7799AA',
+                fontFamily: 'monospace',
+                fontSize: 10,
+                cursor: 'pointer',
+                textAlign: 'left',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>{layer.name}</span>
+                <span style={{ color: '#445566' }}>{layer.rangeKm}km</span>
+              </div>
+              <div style={{ color: '#445566', fontSize: 8, marginTop: 3 }}>
+                {layer.description}
+              </div>
+            </button>
           ))}
         </Section>
       )}

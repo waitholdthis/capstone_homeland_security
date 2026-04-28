@@ -20,6 +20,72 @@ const DEFAULT_PLANNING_ENV = {
   operatorConfidence: 0.85,
 };
 
+const DETECTION_LAYER_ASSETS = [
+  {
+    id: 'layer-radar',
+    name: 'Radar Search Layer',
+    domain: 'radar',
+    type: 'radar',
+    rangeKm: 75,
+    altitudeFtAGL: 30000,
+    color: '#ADFF2F',
+    quality: 0.9,
+    description: 'Active radar search layer for wide-area detection and track initiation.',
+  },
+  {
+    id: 'layer-rf',
+    name: 'RF Sensing Layer',
+    domain: 'rf',
+    type: 'rf',
+    rangeKm: 20,
+    altitudeFtAGL: 12000,
+    color: '#00BFFF',
+    quality: 0.72,
+    description: 'Passive RF collection for C2/video/control-link detection and classification.',
+  },
+  {
+    id: 'layer-eoir',
+    name: 'EO/IR Layer',
+    domain: 'eoir',
+    type: 'eoir',
+    rangeKm: 8,
+    altitudeFtAGL: 10000,
+    color: '#FFD166',
+    quality: 0.78,
+    description: 'Electro-optical / infrared confirmation layer for visual ID and terminal track refinement.',
+  },
+  {
+    id: 'layer-acoustic',
+    name: 'Acoustic Layer',
+    domain: 'acoustic',
+    type: 'acoustic',
+    rangeKm: 3,
+    altitudeFtAGL: 2500,
+    color: '#C77DFF',
+    quality: 0.62,
+    description: 'Short-range acoustic layer for low-altitude small UAS detection in cluttered airspace.',
+  },
+  {
+    id: 'layer-cyber-osint',
+    name: 'Cyber / OSINT Layer',
+    domain: 'cyber-osint',
+    type: 'cyber-osint',
+    rangeKm: 150,
+    altitudeFtAGL: 60000,
+    color: '#FFFFFF',
+    quality: 0.58,
+    description: 'Non-kinetic intelligence layer for launch indicators, network/cyber cues, and external reporting.',
+  },
+];
+
+const DETECTION_DOMAIN_LABELS = {
+  radar: 'RADAR',
+  rf: 'RF',
+  eoir: 'EO/IR',
+  acoustic: 'ACOUSTIC',
+  'cyber-osint': 'CYBER/OSINT',
+};
+
 if (CESIUM_ION_TOKEN) {
   Cesium.Ion.defaultAccessToken = CESIUM_ION_TOKEN;
 }
@@ -111,11 +177,27 @@ function sensorTypeQuality(sensorType) {
     kinetic: 0.82,
     laser: 0.78,
     rf: 0.68,
+    eoir: 0.78,
+    acoustic: 0.62,
+    'cyber-osint': 0.58,
     ew: 0.64,
     passive: 0.72,
     net: 0.74,
   };
   return qualities[sensorType] ?? 0.72;
+}
+
+function detectionDomainsForSystem(system) {
+  if (system?.domain) return [system.domain];
+  const text = `${system?.type ?? ''} ${system?.name ?? ''} ${system?.description ?? ''}`.toLowerCase();
+  const domains = new Set();
+  if (text.includes('radar') || system?.type === 'radar') domains.add('radar');
+  if (text.includes('rf') || text.includes('radio') || text.includes('datalink') || system?.type?.startsWith('rf')) domains.add('rf');
+  if (text.includes('eo') || text.includes('ir') || text.includes('optical') || text.includes('thermal') || text.includes('camera') || system?.type === 'laser') domains.add('eoir');
+  if (text.includes('acoustic')) domains.add('acoustic');
+  if (text.includes('cyber') || text.includes('osint') || text.includes('forensic') || text.includes('network') || system?.type === 'command') domains.add('cyber-osint');
+  if (system?.type === 'detection' && !domains.size) domains.add('rf');
+  return domains.size ? [...domains] : ['radar'];
 }
 
 function environmentDetectionFactor(sensor, point, env = DEFAULT_PLANNING_ENV) {
@@ -143,7 +225,7 @@ function environmentDetectionFactor(sensor, point, env = DEFAULT_PLANNING_ENV) {
     heavy: 0.72,
     denied: 0.48,
   }[env.ew] ?? 1;
-  const ewSensitive = ['radar', 'rf', 'ew', 'net'].includes(sensor.type);
+  const ewSensitive = ['radar', 'rf', 'rf-jam', 'rf-takeover', 'ew', 'net', 'cyber-osint'].includes(sensor.type);
   const ew = ewSensitive ? ewBase : Math.max(0.82, ewBase);
   return clamp(visibility * precipitation * clutter * ew * (env.operatorConfidence ?? 0.85), 0.18, 1.05);
 }
@@ -163,7 +245,7 @@ function sensorDetectionProbability(sensor, point, env = DEFAULT_PLANNING_ENV) {
 
   const rangeScore = clamp(1 - horizontalKm / Math.max(sensor.rangeKm, 0.001), 0, 1);
   const horizonScore = clamp(1 - horizontalKm / Math.max(horizonKm, 0.001), 0, 1);
-  const quality = sensorTypeQuality(sensor.type);
+  const quality = sensor.quality ?? sensorTypeQuality(sensor.type);
   return clamp((0.25 + rangeScore * 0.55 + horizonScore * 0.2) * quality * environmentDetectionFactor(sensor, point, env), 0.03, 0.98);
 }
 
@@ -395,6 +477,57 @@ function computeCoverageGaps(paths, sensors, env = DEFAULT_PLANNING_ENV) {
   };
 }
 
+function computeDetectionArchitecture(paths, sensors, env = DEFAULT_PLANNING_ENV) {
+  const domains = Object.keys(DETECTION_DOMAIN_LABELS);
+  const layers = domains.map(domain => {
+    const domainSensors = sensors.filter(sensor => sensor.domains?.includes(domain));
+    let covered = 0;
+    let samples = 0;
+    let firstDetection = null;
+    let peakProbability = 0;
+
+    paths.forEach(path => {
+      path.forEach(point => {
+        const fused = domainSensors.length
+          ? 1 - domainSensors.reduce((miss, sensor) => miss * (1 - sensorDetectionProbability(sensor, point, env)), 1)
+          : 0;
+        samples += 1;
+        if (fused > 0.25) covered += 1;
+        if (fused > peakProbability) peakProbability = fused;
+        if (fused > 0.35 && firstDetection == null) firstDetection = point.time_s;
+      });
+    });
+
+    return {
+      domain,
+      label: DETECTION_DOMAIN_LABELS[domain],
+      sensor_count: domainSensors.length,
+      coverage_ratio: samples ? covered / samples : 0,
+      first_detection_s: firstDetection,
+      peak_probability: peakProbability,
+      status: domainSensors.length === 0
+        ? 'MISSING'
+        : (samples ? covered / samples : 0) > 0.65
+          ? 'STRONG'
+          : (samples ? covered / samples : 0) > 0.25
+            ? 'PARTIAL'
+            : 'GAP',
+    };
+  });
+
+  const activeLayers = layers.filter(layer => layer.sensor_count > 0).length;
+  const strongLayers = layers.filter(layer => layer.status === 'STRONG').length;
+  const weakest = [...layers].sort((a, b) => a.coverage_ratio - b.coverage_ratio)[0];
+
+  return {
+    active_layers: activeLayers,
+    strong_layers: strongLayers,
+    resilience_score: layers.length ? (strongLayers * 0.16 + activeLayers * 0.08 + mean(layers.map(layer => layer.coverage_ratio)) * 0.44) : 0,
+    weakest_layer: weakest,
+    layers,
+  };
+}
+
 function computeLiveTrackFusion(paths, sensors, threat, threatMode, elapsed, env = DEFAULT_PLANNING_ENV) {
   const currentPoints = paths.map(path => pathPointAtTime(path, elapsed)).filter(Boolean);
   if (!currentPoints.length) return null;
@@ -461,6 +594,7 @@ function estimateImpactIntelligence(paths, threat, threatMode, sensors, env = DE
   const events = computeSensorEvents(paths, sensors, env);
   const monteCarlo = buildMonteCarloAssessment(paths, sensors, threat, threatMode, env);
   const coverage = computeCoverageGaps(paths, sensors, env);
+  const architecture = computeDetectionArchitecture(paths, sensors, env);
   const baseCepM = threatMode === 'missile'
     ? (threat?.cepMeters ?? 100)
     : Math.max(20, (threat?.group ?? 1) * 35 + (threat?.speedMs ?? 25) * 1.5);
@@ -495,6 +629,7 @@ function estimateImpactIntelligence(paths, threat, threatMode, sensors, env = DE
     first_time_to_impact_s: events[0]?.time_to_impact_s ?? center.time_s,
     monte_carlo: monteCarlo,
     coverage,
+    architecture,
     live_track: computeLiveTrackFusion(paths, sensors, threat, threatMode, 0, env),
     environment: env,
     events,
@@ -817,6 +952,7 @@ export default function App() {
   const [faction, setFaction] = useState(FACTIONS.FRIENDLY);
   const [selectedUnit, setSelectedUnit] = useState(UNIT_TYPES[0]);
   const [selectedCUAS, setSelectedCUAS] = useState(CUAS_SYSTEMS[0]);
+  const [selectedLayerAsset, setSelectedLayerAsset] = useState(DETECTION_LAYER_ASSETS[0]);
   const [selectedDrone, setSelectedDrone] = useState(DRONE_TYPES[0]);
   const [selectedMissile, setSelectedMissile] = useState(MISSILE_THREATS[0]);
   const [threatMode, setThreatMode] = useState('uas'); // 'uas' | 'missile'
@@ -1258,6 +1394,7 @@ export default function App() {
             id: selectedCUAS.id,
             name: selectedCUAS.name,
             type: selectedCUAS.type,
+            domains: detectionDomainsForSystem(selectedCUAS),
             rangeKm: selectedCUAS.rangeKm,
             altitudeFtAGL: selectedCUAS.altitudeFtAGL,
             lat,
@@ -1285,6 +1422,7 @@ export default function App() {
             id: selectedCUAS.id,
             name: selectedCUAS.name,
             type: selectedCUAS.type,
+            domains: detectionDomainsForSystem(selectedCUAS),
             rangeKm: selectedCUAS.rangeKm,
             altitudeFtAGL: selectedCUAS.altitudeFtAGL,
             lat,
@@ -1293,6 +1431,65 @@ export default function App() {
           };
           entities.push(ring);
         }
+        placedRef.current.push(...entities);
+        return;
+      }
+
+      // ── PLACE DETECTION LAYER ──
+      if (mode === 'place-layer' && selectedLayerAsset) {
+        const layer = selectedLayerAsset;
+        const layerColor = cesiumColorFromHex(layer.color);
+        const dragGroup = makeDragGroup(layer.domain);
+        const entities = [];
+
+        const marker = markDraggable(viewer.entities.add({
+          position: cartesian,
+          point: {
+            pixelSize: 13,
+            color: layerColor,
+            outlineColor: Cesium.Color.WHITE,
+            outlineWidth: 2,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+          label: {
+            text: layer.name,
+            font: 'bold 11px monospace',
+            pixelOffset: new Cesium.Cartesian2(0, -26),
+            fillColor: layerColor,
+            outlineColor: Cesium.Color.BLACK,
+            outlineWidth: 2,
+            style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          },
+        }), { kind: 'layer', group: dragGroup, label: layer.name });
+        marker._cuasData = {
+          id: layer.id,
+          name: layer.name,
+          type: layer.type,
+          domains: [layer.domain],
+          rangeKm: layer.rangeKm,
+          altitudeFtAGL: layer.altitudeFtAGL,
+          quality: layer.quality,
+          lat,
+          lon,
+          terrainAlt: cartographic.height ?? 0,
+        };
+        entities.push(marker);
+
+        const ring = markDraggable(viewer.entities.add({
+          position: cartesian,
+          ellipse: {
+            semiMajorAxis: layer.rangeKm * 1000,
+            semiMinorAxis: layer.rangeKm * 1000,
+            material: new Cesium.ColorMaterialProperty(layerColor.withAlpha(0.055)),
+            outline: true,
+            outlineColor: layerColor.withAlpha(0.75),
+            outlineWidth: 1.5,
+            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          },
+        }), { kind: 'layer', group: dragGroup, label: layer.name });
+        ring._cuasData = { ...marker._cuasData };
+        entities.push(ring);
+
         placedRef.current.push(...entities);
         return;
       }
@@ -1515,7 +1712,7 @@ export default function App() {
         return;
       }
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
-  }, [mode, faction, selectedUnit, selectedCUAS, selectedDrone, selectedMissile, threatMode, refreshWaypointPreview, selectMapItem]);
+  }, [mode, faction, selectedUnit, selectedCUAS, selectedLayerAsset, selectedDrone, selectedMissile, threatMode, refreshWaypointPreview, selectMapItem]);
 
   // ---- Launch simulation ----
   const handleSimulate = useCallback(async () => {
@@ -1784,6 +1981,9 @@ export default function App() {
         faction={faction} setFaction={setFaction}
         selectedUnit={selectedUnit} setSelectedUnit={setSelectedUnit}
         selectedCUAS={selectedCUAS} setSelectedCUAS={setSelectedCUAS}
+        detectionLayerAssets={DETECTION_LAYER_ASSETS}
+        selectedLayerAsset={selectedLayerAsset}
+        setSelectedLayerAsset={setSelectedLayerAsset}
         selectedDrone={selectedDrone} setSelectedDrone={setSelectedDrone}
         selectedMissile={selectedMissile} setSelectedMissile={setSelectedMissile}
         threatMode={threatMode} setThreatMode={setThreatMode}

@@ -30,6 +30,7 @@ export default function SimulationControls({
   const mc = threatIntel?.monte_carlo;
   const coverage = threatIntel?.coverage;
   const live = threatIntel?.live_track;
+  const architecture = threatIntel?.architecture;
   const topSensors = mc?.sensor_hits?.filter(hit => hit.probability > 0.05).slice(0, 3) ?? [];
   const selectStyle = {
     width: '100%',
@@ -206,6 +207,26 @@ export default function SimulationControls({
             {coverage?.gaps?.length > 0 && (
               <div style={{ color: '#FF8866', marginTop: 5 }}>
                 Blind gap: {fmt(coverage.gaps[0].start_s)} to {fmt(coverage.gaps[0].end_s)}
+              </div>
+            )}
+            {architecture && (
+              <div style={{ marginTop: 8, borderTop: '1px solid #152434', paddingTop: 6 }}>
+                <div style={{ color: '#AABBCC' }}>
+                  Layer resilience {pct(architecture.resilience_score)} · active {architecture.active_layers}/5
+                </div>
+                <div style={{ color: architecture.weakest_layer?.status === 'MISSING' ? '#FF5533' : '#FFAA00', marginBottom: 4 }}>
+                  Weakest: {architecture.weakest_layer?.label} ({architecture.weakest_layer?.status})
+                </div>
+                {architecture.layers.map(layer => (
+                  <div key={layer.domain} style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    color: layer.status === 'STRONG' ? '#00FF7F' : layer.status === 'MISSING' ? '#FF5533' : '#FFAA00',
+                  }}>
+                    <span>{layer.label}</span>
+                    <span>{layer.status} {pct(layer.coverage_ratio)}</span>
+                  </div>
+                ))}
               </div>
             )}
           </div>

@@ -358,6 +358,7 @@ export default function ToolPanel({
   detectionLayerAssets,
   layerColorSwatches,
   selectedLayerAsset, setSelectedLayerAsset,
+  onAddCustomLayerAsset,
   selectedDrone, setSelectedDrone,
   selectedMissile, setSelectedMissile,
   threatMode, setThreatMode,
@@ -368,8 +369,54 @@ export default function ToolPanel({
   const [expandedType, setExpandedType] = useState('kinetic');
   const [expandedTraj, setExpandedTraj] = useState('ballistic');
   const [expandedImpactTraj, setExpandedImpactTraj] = useState('ballistic');
+  const [showCustomLayerForm, setShowCustomLayerForm] = useState(false);
+  const [customLayer, setCustomLayer] = useState({
+    name: '',
+    domain: 'radar',
+    rangeKm: 25,
+    altitudeFtAGL: 10000,
+    quality: 0.75,
+    color: '#00E5FF',
+    description: '',
+  });
   const grouped = groupByType(CUAS_SYSTEMS);
   const missileGrouped = groupMissilesByTraj(MISSILE_THREATS);
+  const inputStyle = {
+    width: '100%',
+    boxSizing: 'border-box',
+    background: '#050D18',
+    border: '1px solid #223344',
+    color: '#AABBCC',
+    fontFamily: 'monospace',
+    fontSize: 10,
+    padding: '5px 6px',
+  };
+  const setCustomField = (key, value) => setCustomLayer(prev => ({ ...prev, [key]: value }));
+  const addCustomLayer = () => {
+    const name = customLayer.name.trim();
+    if (!name) return;
+    const rangeKm = Math.max(0.1, Number(customLayer.rangeKm) || 0.1);
+    const altitudeFtAGL = Math.max(0, Number(customLayer.altitudeFtAGL) || 0);
+    const quality = Math.max(0.05, Math.min(0.98, Number(customLayer.quality) || 0.75));
+    const domainLabel = {
+      radar: 'Radar',
+      rf: 'RF',
+      eoir: 'EO/IR',
+      acoustic: 'Acoustic',
+      'cyber-osint': 'Cyber/OSINT',
+    }[customLayer.domain] ?? 'Detection';
+
+    onAddCustomLayerAsset({
+      ...customLayer,
+      name,
+      rangeKm,
+      altitudeFtAGL,
+      quality,
+      description: customLayer.description.trim() || `${domainLabel} capability added by planner.`,
+    });
+    setCustomLayer(prev => ({ ...prev, name: '', description: '' }));
+    setShowCustomLayerForm(false);
+  };
 
   return (
     <div style={{
@@ -444,6 +491,119 @@ export default function ToolPanel({
           <div style={{ color: '#667788', fontFamily: 'monospace', fontSize: 9, lineHeight: 1.5, marginBottom: 8 }}>
             Build layered detection using radar, RF, EO/IR, acoustic, and cyber/OSINT assets. Click map to place selected layer.
           </div>
+          <button
+            onClick={() => setShowCustomLayerForm(prev => !prev)}
+            style={{
+              width: '100%',
+              padding: '7px 8px',
+              marginBottom: 8,
+              background: showCustomLayerForm ? '#00E5FF18' : 'transparent',
+              border: `1px solid ${showCustomLayerForm ? '#00E5FF' : '#223344'}`,
+              color: showCustomLayerForm ? '#00E5FF' : '#AABBCC',
+              fontFamily: 'monospace',
+              fontSize: 10,
+              cursor: 'pointer',
+              textAlign: 'left',
+            }}
+          >
+            + ADD PLANNER CAPABILITY
+          </button>
+          {showCustomLayerForm && (
+            <div style={{ border: '1px solid #123044', background: '#050D18', padding: 8, marginBottom: 10 }}>
+              <label style={{ display: 'block', color: '#667788', fontSize: 9, marginBottom: 6 }}>
+                Capability Name
+                <input
+                  value={customLayer.name}
+                  onChange={e => setCustomField('name', e.target.value)}
+                  placeholder="e.g. Polish Passive RF Net"
+                  style={inputStyle}
+                />
+              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
+                <label style={{ color: '#667788', fontSize: 9 }}>
+                  Domain
+                  <select value={customLayer.domain} onChange={e => setCustomField('domain', e.target.value)} style={inputStyle}>
+                    <option value="radar">Radar</option>
+                    <option value="rf">RF Sensing</option>
+                    <option value="eoir">EO/IR</option>
+                    <option value="acoustic">Acoustic</option>
+                    <option value="cyber-osint">Cyber/OSINT</option>
+                  </select>
+                </label>
+                <label style={{ color: '#667788', fontSize: 9 }}>
+                  Color
+                  <input
+                    type="color"
+                    value={customLayer.color}
+                    onChange={e => setCustomField('color', e.target.value)}
+                    style={{ ...inputStyle, height: 28, padding: 1 }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
+                <label style={{ color: '#667788', fontSize: 9 }}>
+                  Range km
+                  <input
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={customLayer.rangeKm}
+                    onChange={e => setCustomField('rangeKm', e.target.value)}
+                    style={inputStyle}
+                  />
+                </label>
+                <label style={{ color: '#667788', fontSize: 9 }}>
+                  Ceiling ft AGL
+                  <input
+                    type="number"
+                    min="0"
+                    step="100"
+                    value={customLayer.altitudeFtAGL}
+                    onChange={e => setCustomField('altitudeFtAGL', e.target.value)}
+                    style={inputStyle}
+                  />
+                </label>
+              </div>
+              <label style={{ display: 'block', color: '#667788', fontSize: 9, marginBottom: 6 }}>
+                Confidence / Quality {Math.round(Number(customLayer.quality) * 100)}%
+                <input
+                  type="range"
+                  min="0.05"
+                  max="0.98"
+                  step="0.01"
+                  value={customLayer.quality}
+                  onChange={e => setCustomField('quality', e.target.value)}
+                  style={{ width: '100%' }}
+                />
+              </label>
+              <label style={{ display: 'block', color: '#667788', fontSize: 9, marginBottom: 8 }}>
+                Notes
+                <textarea
+                  value={customLayer.description}
+                  onChange={e => setCustomField('description', e.target.value)}
+                  placeholder="Known limits, cue source, assumptions..."
+                  rows={3}
+                  style={{ ...inputStyle, resize: 'vertical' }}
+                />
+              </label>
+              <button
+                onClick={addCustomLayer}
+                disabled={!customLayer.name.trim()}
+                style={{
+                  width: '100%',
+                  padding: '7px 8px',
+                  background: customLayer.name.trim() ? '#00E5FF22' : 'transparent',
+                  border: `1px solid ${customLayer.name.trim() ? '#00E5FF' : '#223344'}`,
+                  color: customLayer.name.trim() ? '#00E5FF' : '#445566',
+                  fontFamily: 'monospace',
+                  fontSize: 10,
+                  cursor: customLayer.name.trim() ? 'pointer' : 'not-allowed',
+                }}
+              >
+                CREATE CAPABILITY
+              </button>
+            </div>
+          )}
           {detectionLayerAssets.map(layer => {
             const active = selectedLayerAsset?.id === layer.id;
             const color = active ? selectedLayerAsset.color : layer.color;

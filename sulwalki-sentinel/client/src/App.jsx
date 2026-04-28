@@ -954,6 +954,7 @@ export default function App() {
   const [faction, setFaction] = useState(FACTIONS.FRIENDLY);
   const [selectedUnit, setSelectedUnit] = useState(UNIT_TYPES[0]);
   const [selectedCUAS, setSelectedCUAS] = useState(CUAS_SYSTEMS[0]);
+  const [customLayerAssets, setCustomLayerAssets] = useState([]);
   const [selectedLayerAsset, setSelectedLayerAsset] = useState(DETECTION_LAYER_ASSETS[0]);
   const [selectedDrone, setSelectedDrone] = useState(DRONE_TYPES[0]);
   const [selectedMissile, setSelectedMissile] = useState(MISSILE_THREATS[0]);
@@ -992,6 +993,21 @@ export default function App() {
     threat: null, threatMode: 'uas', env: DEFAULT_PLANNING_ENV,
     alertedIds: new Set(), lastFusionUpdate: 0, startWall: null, speed: 1, raf: null,
   });
+
+  const detectionLayerAssets = [...DETECTION_LAYER_ASSETS, ...customLayerAssets];
+
+  const handleAddCustomLayerAsset = useCallback((asset) => {
+    const normalized = {
+      ...asset,
+      id: `custom-layer-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      type: asset.domain,
+      rangeKm: Number(asset.rangeKm),
+      altitudeFtAGL: Number(asset.altitudeFtAGL),
+      quality: Number(asset.quality),
+    };
+    setCustomLayerAssets(prev => [...prev, normalized]);
+    setSelectedLayerAsset(normalized);
+  }, []);
 
   const refreshWaypointPreview = useCallback(() => {
     const viewer = viewerRef.current;
@@ -1983,10 +1999,11 @@ export default function App() {
         faction={faction} setFaction={setFaction}
         selectedUnit={selectedUnit} setSelectedUnit={setSelectedUnit}
         selectedCUAS={selectedCUAS} setSelectedCUAS={setSelectedCUAS}
-        detectionLayerAssets={DETECTION_LAYER_ASSETS}
+        detectionLayerAssets={detectionLayerAssets}
         layerColorSwatches={LAYER_COLOR_SWATCHES}
         selectedLayerAsset={selectedLayerAsset}
         setSelectedLayerAsset={setSelectedLayerAsset}
+        onAddCustomLayerAsset={handleAddCustomLayerAsset}
         selectedDrone={selectedDrone} setSelectedDrone={setSelectedDrone}
         selectedMissile={selectedMissile} setSelectedMissile={setSelectedMissile}
         threatMode={threatMode} setThreatMode={setThreatMode}

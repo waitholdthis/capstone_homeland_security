@@ -78,6 +78,8 @@ const DETECTION_LAYER_ASSETS = [
   },
 ];
 
+const LAYER_COLOR_SWATCHES = ['#00E5FF', '#39FF14', '#FFD60A', '#FF4D6D', '#B967FF', '#FFFFFF'];
+
 const DETECTION_DOMAIN_LABELS = {
   radar: 'RADAR',
   rf: 'RF',
@@ -1982,6 +1984,7 @@ export default function App() {
         selectedUnit={selectedUnit} setSelectedUnit={setSelectedUnit}
         selectedCUAS={selectedCUAS} setSelectedCUAS={setSelectedCUAS}
         detectionLayerAssets={DETECTION_LAYER_ASSETS}
+        layerColorSwatches={LAYER_COLOR_SWATCHES}
         selectedLayerAsset={selectedLayerAsset}
         setSelectedLayerAsset={setSelectedLayerAsset}
         selectedDrone={selectedDrone} setSelectedDrone={setSelectedDrone}

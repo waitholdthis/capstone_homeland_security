@@ -356,6 +356,7 @@ export default function ToolPanel({
   selectedUnit, setSelectedUnit,
   selectedCUAS, setSelectedCUAS,
   detectionLayerAssets,
+  layerColorSwatches,
   selectedLayerAsset, setSelectedLayerAsset,
   selectedDrone, setSelectedDrone,
   selectedMissile, setSelectedMissile,
@@ -443,32 +444,72 @@ export default function ToolPanel({
           <div style={{ color: '#667788', fontFamily: 'monospace', fontSize: 9, lineHeight: 1.5, marginBottom: 8 }}>
             Build layered detection using radar, RF, EO/IR, acoustic, and cyber/OSINT assets. Click map to place selected layer.
           </div>
-          {detectionLayerAssets.map(layer => (
-            <button
-              key={layer.id}
-              onClick={() => setSelectedLayerAsset(layer)}
-              style={{
-                width: '100%',
-                padding: '7px 8px',
-                marginBottom: 5,
-                background: selectedLayerAsset?.id === layer.id ? `${layer.color}22` : 'transparent',
-                border: `1px solid ${selectedLayerAsset?.id === layer.id ? layer.color : '#1A2A3A'}`,
-                color: selectedLayerAsset?.id === layer.id ? layer.color : '#7799AA',
-                fontFamily: 'monospace',
-                fontSize: 10,
-                cursor: 'pointer',
-                textAlign: 'left',
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>{layer.name}</span>
-                <span style={{ color: '#445566' }}>{layer.rangeKm}km</span>
+          {detectionLayerAssets.map(layer => {
+            const active = selectedLayerAsset?.id === layer.id;
+            const color = active ? selectedLayerAsset.color : layer.color;
+            return (
+              <div key={layer.id} style={{
+                marginBottom: 7,
+                padding: active ? '7px 8px' : 0,
+                background: active ? `${color}14` : 'transparent',
+                border: active ? `1px solid ${color}` : 'none',
+              }}>
+                <button
+                  onClick={() => setSelectedLayerAsset(prev => ({ ...layer, color: prev?.id === layer.id ? prev.color : layer.color }))}
+                  style={{
+                    width: '100%',
+                    padding: active ? 0 : '7px 8px',
+                    marginBottom: active ? 6 : 0,
+                    background: active ? 'transparent' : 'transparent',
+                    border: active ? 'none' : `1px solid #1A2A3A`,
+                    color: active ? color : '#7799AA',
+                    fontFamily: 'monospace',
+                    fontSize: 10,
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+                    <span>{layer.name}</span>
+                    <span style={{ color: '#445566', flexShrink: 0 }}>{layer.rangeKm}km</span>
+                  </div>
+                  <div style={{ color: '#445566', fontSize: 8, marginTop: 3 }}>
+                    {layer.description}
+                  </div>
+                </button>
+                {active && (
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                      <span style={{ color: '#667788', fontSize: 9 }}>Layer color</span>
+                      <input
+                        type="color"
+                        value={selectedLayerAsset.color}
+                        onChange={e => setSelectedLayerAsset(prev => ({ ...prev, color: e.target.value }))}
+                        style={{ width: 34, height: 24, background: 'transparent', border: '1px solid #223344', padding: 0 }}
+                      />
+                      <span style={{ color: selectedLayerAsset.color, fontSize: 9 }}>{selectedLayerAsset.color.toUpperCase()}</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                      {layerColorSwatches.map(swatch => (
+                        <button
+                          key={swatch}
+                          onClick={() => setSelectedLayerAsset(prev => ({ ...prev, color: swatch }))}
+                          title={swatch}
+                          style={{
+                            width: 22,
+                            height: 22,
+                            background: swatch,
+                            border: selectedLayerAsset.color === swatch ? '2px solid #FFFFFF' : '1px solid #223344',
+                            cursor: 'pointer',
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
-              <div style={{ color: '#445566', fontSize: 8, marginTop: 3 }}>
-                {layer.description}
-              </div>
-            </button>
-          ))}
+            );
+          })}
         </Section>
       )}
 

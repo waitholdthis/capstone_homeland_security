@@ -49,6 +49,30 @@ function smoothstep(t) {
   return t * t * (3 - 2 * t);
 }
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function mean(values) {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function quantile(values, q) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const pos = (sorted.length - 1) * q;
+  const base = Math.floor(pos);
+  const rest = pos - base;
+  return sorted[base + 1] == null ? sorted[base] : sorted[base] + rest * (sorted[base + 1] - sorted[base]);
+}
+
+function weightedAverage(values) {
+  const totalWeight = values.reduce((sum, item) => sum + item.weight, 0);
+  if (!totalWeight) return 0;
+  return values.reduce((sum, item) => sum + item.value * item.weight, 0) / totalWeight;
+}
+
 function pathPointAtTime(path, elapsed) {
   if (!path.length) return null;
   if (elapsed <= path[0].time_s) return path[0];
@@ -65,6 +89,324 @@ function pathPointAtTime(path, elapsed) {
     lat: p0.lat + (p1.lat - p0.lat) * t,
     lon: p0.lon + (p1.lon - p0.lon) * t,
     alt: p0.alt + (p1.alt - p0.alt) * t,
+  };
+}
+
+function radarHorizonKm(sensorHeightM, targetAltM) {
+  const sensorTerm = Math.sqrt(Math.max(sensorHeightM, 0));
+  const targetTerm = Math.sqrt(Math.max(targetAltM, 0));
+  return 3.57 * (sensorTerm + targetTerm);
+}
+
+function sensorTypeQuality(sensorType) {
+  const qualities = {
+    radar: 0.92,
+    kinetic: 0.82,
+    laser: 0.78,
+    rf: 0.68,
+    ew: 0.64,
+    passive: 0.72,
+    net: 0.74,
+  };
+  return qualities[sensorType] ?? 0.72;
+}
+
+function sensorDetectionProbability(sensor, point) {
+  const horizontalKm = geodesicDistanceKm(point.lat, point.lon, sensor.lat, sensor.lon);
+  if (horizontalKm > sensor.rangeKm) return 0;
+
+  const terrainM = sensor.terrainAlt ?? 0;
+  const sensorHeightM = terrainM + 4;
+  const targetAltM = Math.max(point.alt - terrainM, 0);
+  const horizonKm = radarHorizonKm(sensorHeightM, targetAltM);
+  if (horizontalKm > Math.min(sensor.rangeKm, horizonKm)) return 0;
+
+  const ceilingM = (sensor.altitudeFtAGL ?? 0) * 0.3048;
+  if (ceilingM && point.alt > terrainM + ceilingM) return 0;
+
+  const rangeScore = clamp(1 - horizontalKm / Math.max(sensor.rangeKm, 0.001), 0, 1);
+  const horizonScore = clamp(1 - horizontalKm / Math.max(horizonKm, 0.001), 0, 1);
+  const quality = sensorTypeQuality(sensor.type);
+  return clamp((0.25 + rangeScore * 0.55 + horizonScore * 0.2) * quality, 0.05, 0.98);
+}
+
+function interpolateCrossingTime(p0, p1, sensor, entering) {
+  const d0 = geodesicDistanceKm(p0.lat, p0.lon, sensor.lat, sensor.lon);
+  const d1 = geodesicDistanceKm(p1.lat, p1.lon, sensor.lat, sensor.lon);
+  const span = d1 - d0;
+  if (Math.abs(span) < 0.0001) return entering ? p1.time_s : p0.time_s;
+  const t = Math.max(0, Math.min(1, (sensor.rangeKm - d0) / span));
+  return p0.time_s + (p1.time_s - p0.time_s) * t;
+}
+
+function sensorCanSeePoint(sensor, point) {
+  return sensorDetectionProbability(sensor, point) > 0;
+}
+
+function computeSensorEvents(paths, sensors) {
+  const endTime = Math.max(...paths.map(path => path[path.length - 1]?.time_s ?? 0), 0);
+  const events = [];
+
+  paths.forEach((path, trackIndex) => {
+    sensors.forEach(sensor => {
+      let inside = false;
+      let entryTime = null;
+      let exitTime = null;
+      let closestKm = Number.POSITIVE_INFINITY;
+      let closestPoint = null;
+
+      for (let i = 0; i < path.length; i++) {
+        const point = path[i];
+        const horizontalKm = geodesicDistanceKm(point.lat, point.lon, sensor.lat, sensor.lon);
+        if (horizontalKm < closestKm) {
+          closestKm = horizontalKm;
+          closestPoint = point;
+        }
+
+        const canSee = sensorCanSeePoint(sensor, point);
+        if (canSee && !inside) {
+          inside = true;
+          entryTime = i > 0 ? interpolateCrossingTime(path[i - 1], point, sensor, true) : point.time_s;
+        }
+        if (!canSee && inside) {
+          exitTime = i > 0 ? interpolateCrossingTime(path[i - 1], point, sensor, false) : point.time_s;
+          break;
+        }
+      }
+
+      if (entryTime != null) {
+        const rangeQuality = Math.max(0, 1 - closestKm / Math.max(sensor.rangeKm, 0.001));
+        const dwellS = Math.max((exitTime ?? endTime) - entryTime, 0);
+        const dwellQuality = Math.min(dwellS / 20, 1);
+        const closestProbability = closestPoint ? sensorDetectionProbability(sensor, closestPoint) : 0.25;
+        const confidence = Math.min(0.98, Math.max(0.18, closestProbability * 0.72 + rangeQuality * 0.12 + dwellQuality * 0.16));
+
+        events.push({
+          id: `${trackIndex}-${sensor.id}-${sensor.lat}-${sensor.lon}`,
+          trackIndex,
+          sensor_id: sensor.id,
+          sensor_name: sensor.name,
+          sensor_type: sensor.type ?? 'sensor',
+          entry_time_s: entryTime,
+          exit_time_s: exitTime,
+          time_to_impact_s: Math.max(endTime - entryTime, 0),
+          closest_km: closestKm,
+          confidence,
+          lat: closestPoint?.lat ?? sensor.lat,
+          lon: closestPoint?.lon ?? sensor.lon,
+          alt: closestPoint?.alt ?? 0,
+        });
+      }
+    });
+  });
+
+  return events
+    .sort((a, b) => a.entry_time_s - b.entry_time_s)
+    .map((event, index, sorted) => ({
+      ...event,
+      downstream_sensors: sorted
+        .filter(next => next.trackIndex === event.trackIndex && next.entry_time_s > event.entry_time_s)
+        .slice(0, 3)
+        .map(next => ({
+          sensor_name: next.sensor_name,
+          eta_s: next.entry_time_s - event.entry_time_s,
+          time_to_impact_s: next.time_to_impact_s,
+          confidence: next.confidence,
+        })),
+    }));
+}
+
+function perturbPath(path, threat, threatMode, sampleIndex) {
+  if (!path.length) return [];
+
+  const baseCepM = threatMode === 'missile'
+    ? (threat?.cepMeters ?? 100)
+    : Math.max(25, (threat?.group ?? 1) * 45 + (threat?.speedMs ?? 25) * 2);
+  const maneuverM = threatMode === 'missile'
+    ? Math.max(25, baseCepM * 0.45)
+    : Math.max(50, (threat?.speedMs ?? 25) * 4);
+  const phase = randBetween(0, Math.PI * 2) + sampleIndex * 0.19;
+  const wave = randBetween(0.8, 2.6);
+  const finalLatOffsetM = randBetween(-baseCepM, baseCepM);
+  const finalLonOffsetM = randBetween(-baseCepM, baseCepM);
+  const timeScale = threatMode === 'missile'
+    ? randBetween(0.94, 1.08)
+    : randBetween(0.86, 1.18);
+
+  return path.map((point, index) => {
+    const progress = path.length === 1 ? 0 : index / (path.length - 1);
+    const endpointWeight = smoothstep(progress);
+    const maneuver = Math.sin(progress * Math.PI * 2 * wave + phase) * Math.sin(Math.PI * progress) * maneuverM;
+    const next = path[Math.min(path.length - 1, index + 1)];
+    const prev = path[Math.max(0, index - 1)];
+    const dLat = next.lat - prev.lat;
+    const dLon = next.lon - prev.lon;
+    const len = Math.hypot(dLat, dLon) || 1;
+    const normalLat = -dLon / len;
+    const normalLon = dLat / len;
+
+    return {
+      ...point,
+      time_s: point.time_s * timeScale,
+      lat: point.lat + normalLat * metersToLat(maneuver) + metersToLat(finalLatOffsetM * endpointWeight),
+      lon: point.lon + normalLon * metersToLon(maneuver, point.lat) + metersToLon(finalLonOffsetM * endpointWeight, point.lat),
+      alt: Math.max(5, point.alt + randBetween(-8, 8) * Math.sin(Math.PI * progress)),
+    };
+  });
+}
+
+function buildMonteCarloAssessment(paths, sensors, threat, threatMode, samplesPerTrack = 24) {
+  const samplePaths = [];
+  paths.forEach((path, trackIndex) => {
+    for (let i = 0; i < samplesPerTrack; i++) {
+      samplePaths.push({ trackIndex, path: perturbPath(path, threat, threatMode, i) });
+    }
+  });
+
+  const impactPoints = samplePaths.map(sample => sample.path[sample.path.length - 1]).filter(Boolean);
+  const centerLat = mean(impactPoints.map(point => point.lat));
+  const centerLon = mean(impactPoints.map(point => point.lon));
+  const impactTimes = impactPoints.map(point => point.time_s);
+  const radialErrorsM = impactPoints.map(point => geodesicDistanceKm(centerLat, centerLon, point.lat, point.lon) * 1000);
+
+  const sampleEvents = samplePaths.flatMap(sample =>
+    computeSensorEvents([sample.path], sensors).map(event => ({
+      ...event,
+      trackIndex: sample.trackIndex,
+    }))
+  );
+  const firstDetectionTimes = samplePaths.map(sample => {
+    const events = computeSensorEvents([sample.path], sensors);
+    return events[0]?.entry_time_s ?? null;
+  }).filter(value => value != null);
+  const leadTimes = samplePaths.map(sample => {
+    const end = sample.path[sample.path.length - 1]?.time_s ?? 0;
+    const events = computeSensorEvents([sample.path], sensors);
+    return events[0] ? end - events[0].entry_time_s : 0;
+  });
+  const sensorHits = sensors.map(sensor => {
+    const hits = sampleEvents.filter(event => event.sensor_id === sensor.id);
+    return {
+      sensor_id: sensor.id,
+      sensor_name: sensor.name,
+      probability: samplePaths.length ? hits.length / samplePaths.length : 0,
+      avg_confidence: hits.length ? mean(hits.map(event => event.confidence)) : 0,
+      median_entry_s: hits.length ? quantile(hits.map(event => event.entry_time_s), 0.5) : null,
+    };
+  }).sort((a, b) => b.probability - a.probability);
+
+  return {
+    samples: samplePaths.length,
+    impact_p50_m: Math.round(quantile(radialErrorsM, 0.5)),
+    impact_p90_m: Math.round(quantile(radialErrorsM, 0.9)),
+    time_p10_s: quantile(impactTimes, 0.1),
+    time_p50_s: quantile(impactTimes, 0.5),
+    time_p90_s: quantile(impactTimes, 0.9),
+    first_detection_p50_s: firstDetectionTimes.length ? quantile(firstDetectionTimes, 0.5) : null,
+    lead_time_p10_s: quantile(leadTimes, 0.1),
+    lead_time_p50_s: quantile(leadTimes, 0.5),
+    lead_time_p90_s: quantile(leadTimes, 0.9),
+    sensor_hits: sensorHits,
+  };
+}
+
+function computeCoverageGaps(paths, sensors) {
+  const gaps = [];
+  let totalUncoveredS = 0;
+  let longestGapS = 0;
+  let coveredSamples = 0;
+  let totalSamples = 0;
+
+  paths.forEach((path, trackIndex) => {
+    let openGap = null;
+    for (let i = 0; i < path.length; i++) {
+      const point = path[i];
+      const coverage = sensors
+        .map(sensor => ({ sensor, probability: sensorDetectionProbability(sensor, point) }))
+        .filter(item => item.probability > 0);
+      const fusedCoverage = coverage.length
+        ? 1 - coverage.reduce((miss, item) => miss * (1 - item.probability), 1)
+        : 0;
+      totalSamples += 1;
+      if (fusedCoverage > 0.35) coveredSamples += 1;
+
+      if (fusedCoverage <= 0.2 && !openGap) {
+        openGap = { trackIndex, start_s: point.time_s, start_lat: point.lat, start_lon: point.lon };
+      }
+      if ((fusedCoverage > 0.2 || i === path.length - 1) && openGap) {
+        const endPoint = point;
+        const duration = Math.max(endPoint.time_s - openGap.start_s, 0);
+        totalUncoveredS += duration;
+        longestGapS = Math.max(longestGapS, duration);
+        gaps.push({
+          ...openGap,
+          end_s: endPoint.time_s,
+          end_lat: endPoint.lat,
+          end_lon: endPoint.lon,
+          duration_s: duration,
+        });
+        openGap = null;
+      }
+    }
+  });
+
+  return {
+    coverage_ratio: totalSamples ? coveredSamples / totalSamples : 0,
+    total_uncovered_s: totalUncoveredS,
+    longest_gap_s: longestGapS,
+    gaps: gaps.sort((a, b) => b.duration_s - a.duration_s).slice(0, 5),
+  };
+}
+
+function estimateImpactIntelligence(paths, threat, threatMode, sensors) {
+  const finalPoints = paths.map(path => path[path.length - 1]).filter(Boolean);
+  if (!finalPoints.length) return null;
+
+  const center = finalPoints.reduce((acc, point) => ({
+    lat: acc.lat + point.lat / finalPoints.length,
+    lon: acc.lon + point.lon / finalPoints.length,
+    alt: acc.alt + point.alt / finalPoints.length,
+    time_s: Math.max(acc.time_s, point.time_s),
+  }), { lat: 0, lon: 0, alt: 0, time_s: 0 });
+
+  const events = computeSensorEvents(paths, sensors);
+  const monteCarlo = buildMonteCarloAssessment(paths, sensors, threat, threatMode);
+  const coverage = computeCoverageGaps(paths, sensors);
+  const baseCepM = threatMode === 'missile'
+    ? (threat?.cepMeters ?? 100)
+    : Math.max(20, (threat?.group ?? 1) * 35 + (threat?.speedMs ?? 25) * 1.5);
+  const sensorConfidence = events.length
+    ? events.reduce((sum, event) => sum + event.confidence, 0) / events.length
+    : 0.18;
+  const geometryBonus = Math.min(new Set(events.map(e => e.sensor_id)).size * 0.08, 0.24);
+  const confidence = Math.min(0.96, sensorConfidence + geometryBonus);
+  const uncertainty_m = Math.max(
+    Math.round(baseCepM * (1.65 - confidence) + (events.length ? 0 : baseCepM)),
+    monteCarlo.impact_p90_m,
+  );
+  const sensorHitScores = monteCarlo.sensor_hits
+    .filter(hit => hit.probability > 0.05)
+    .map(hit => ({ value: hit.avg_confidence, weight: hit.probability }));
+  const fusedConfidence = clamp(
+    confidence * 0.55
+      + (sensorHitScores.length ? weightedAverage(sensorHitScores) : 0.15) * 0.25
+      + coverage.coverage_ratio * 0.2,
+    0.05,
+    0.98,
+  );
+
+  return {
+    target_lat: center.lat,
+    target_lon: center.lon,
+    impact_time_s: center.time_s,
+    confidence: fusedConfidence,
+    uncertainty_m,
+    sensor_count: new Set(events.map(e => e.sensor_id)).size,
+    first_detection_s: events[0]?.entry_time_s ?? null,
+    first_time_to_impact_s: events[0]?.time_to_impact_s ?? center.time_s,
+    monte_carlo: monteCarlo,
+    coverage,
+    events,
   };
 }
 
@@ -301,7 +643,7 @@ function updateEntityMapPosition(entity, lat, lon, alt, cartesian) {
   entity.position = nextPosition;
 
   if (entity._cuasData) {
-    entity._cuasData = { ...entity._cuasData, lat, lon };
+    entity._cuasData = { ...entity._cuasData, lat, lon, terrainAlt: alt };
   }
 }
 
@@ -404,15 +746,17 @@ export default function App() {
   const [waypointCount, setWaypointCount] = useState(0);
   const pathLineRef = useRef(null);
   const trailRef = useRef(null);
+  const impactEstimateRef = useRef(null);
 
   const [simActive, setSimActive] = useState(false);
   const [simPlaying, setSimPlaying] = useState(false);
   const [simSpeed, setSimSpeed] = useState(1);
   const [simElapsed, setSimElapsed] = useState(0);
   const [intercepts, setIntercepts] = useState([]);
+  const [threatIntel, setThreatIntel] = useState(null);
   const simRef = useRef({
-    path: [], paths: [], entities: [], cuasList: [],
-    firedIds: new Set(), startWall: null, speed: 1, raf: null,
+    path: [], paths: [], entities: [], cuasList: [], sensorEvents: [],
+    alertedIds: new Set(), startWall: null, speed: 1, raf: null,
   });
 
   const refreshWaypointPreview = useCallback(() => {
@@ -730,7 +1074,16 @@ export default function App() {
             billboard: { image: img, verticalOrigin: Cesium.VerticalOrigin.BOTTOM, disableDepthTestDistance: Number.POSITIVE_INFINITY },
             label: { text: selectedCUAS.name, font: 'bold 11px monospace', pixelOffset: new Cesium.Cartesian2(0, -42), fillColor: cColor, outlineColor: Cesium.Color.BLACK, outlineWidth: 2, style: Cesium.LabelStyle.FILL_AND_OUTLINE },
           }), { kind: 'cuas', group: dragGroup });
-          b._cuasData = { id: selectedCUAS.id, name: selectedCUAS.name, rangeKm: selectedCUAS.rangeKm, lat, lon };
+          b._cuasData = {
+            id: selectedCUAS.id,
+            name: selectedCUAS.name,
+            type: selectedCUAS.type,
+            rangeKm: selectedCUAS.rangeKm,
+            altitudeFtAGL: selectedCUAS.altitudeFtAGL,
+            lat,
+            lon,
+            terrainAlt: cartographic.height ?? 0,
+          };
           entities.push(b);
         }
         if (selectedCUAS.rangeKm > 0) {
@@ -748,7 +1101,16 @@ export default function App() {
               slicePartitions: 32, stackPartitions: 16, subdivisions: 64,
             },
           }), { kind: 'cuas', group: dragGroup });
-          ring._cuasData = { id: selectedCUAS.id, name: selectedCUAS.name, rangeKm: selectedCUAS.rangeKm, lat, lon };
+          ring._cuasData = {
+            id: selectedCUAS.id,
+            name: selectedCUAS.name,
+            type: selectedCUAS.type,
+            rangeKm: selectedCUAS.rangeKm,
+            altitudeFtAGL: selectedCUAS.altitudeFtAGL,
+            lat,
+            lon,
+            terrainAlt: cartographic.height ?? 0,
+          };
           entities.push(ring);
         }
         placedRef.current.push(...entities);
@@ -1030,6 +1392,36 @@ export default function App() {
     const simPaths = threatMode === 'uas'
       ? Array.from({ length: count }, (_, i) => makeErraticUASPath(path, selectedDrone, i))
       : [path];
+    const intel = estimateImpactIntelligence(simPaths, threat, threatMode, cuasList);
+
+    if (impactEstimateRef.current) {
+      viewer.entities.remove(impactEstimateRef.current);
+      impactEstimateRef.current = null;
+    }
+    if (intel) {
+      impactEstimateRef.current = viewer.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(intel.target_lon, intel.target_lat, 0),
+        ellipse: {
+          semiMajorAxis: Math.max(intel.uncertainty_m, 15),
+          semiMinorAxis: Math.max(intel.monte_carlo?.impact_p50_m ?? intel.uncertainty_m * 0.55, 10),
+          material: new Cesium.ColorMaterialProperty(threatColor.withAlpha(0.12)),
+          outline: true,
+          outlineColor: threatColor.withAlpha(0.85),
+          outlineWidth: 2,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        },
+        label: {
+          text: `PREDICTED IMPACT\nP90 ${intel.uncertainty_m}m`,
+          font: 'bold 10px monospace',
+          fillColor: threatColor,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 2,
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          pixelOffset: new Cesium.Cartesian2(0, -22),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      });
+    }
 
     // Draw glowing trail showing flight path
     if (Array.isArray(trailRef.current)) {
@@ -1058,11 +1450,22 @@ export default function App() {
       droneEntities.push(ent);
     }
 
-    simRef.current = { path, paths: simPaths, entities: droneEntities, cuasList, firedIds: new Set(), startWall: null, speed: simSpeed, raf: null };
+    simRef.current = {
+      path,
+      paths: simPaths,
+      entities: droneEntities,
+      cuasList,
+      sensorEvents: intel?.events ?? [],
+      alertedIds: new Set(),
+      startWall: null,
+      speed: simSpeed,
+      raf: null,
+    };
     setSimActive(true);
     setSimPlaying(false);
     setSimElapsed(0);
     setIntercepts([]);
+    setThreatIntel(intel);
   }, [threatMode, selectedDrone, selectedMissile, simSpeed]);
 
   // ---- Play / Pause ----
@@ -1083,14 +1486,25 @@ export default function App() {
           if (!point) return;
           ent.position = Cesium.Cartesian3.fromDegrees(point.lon, point.lat, point.alt);
 
-          simRef.current.cuasList.forEach(sys => {
-            const key = `${sys.id}-${sys.lat}-${sys.lon}`;
-            if (simRef.current.firedIds.has(key)) return;
-            if (geodesicDistanceKm(point.lat, point.lon, sys.lat, sys.lon) <= sys.rangeKm) {
-              simRef.current.firedIds.add(key);
-              setIntercepts(prev => [...prev, { time_s: elapsed, cuas_id: sys.id, cuas_name: sys.name, lat: point.lat, lon: point.lon, alt: point.alt }]);
-            }
-          });
+          simRef.current.sensorEvents
+            .filter(event => event.trackIndex === i && event.entry_time_s <= elapsed)
+            .forEach(event => {
+              if (simRef.current.alertedIds.has(event.id)) return;
+              simRef.current.alertedIds.add(event.id);
+              setIntercepts(prev => [...prev, {
+                time_s: event.entry_time_s,
+                cuas_id: event.sensor_id,
+                cuas_name: event.sensor_name,
+                sensor_type: event.sensor_type,
+                lat: event.lat,
+                lon: event.lon,
+                alt: event.alt,
+                time_to_impact_s: event.time_to_impact_s,
+                closest_km: event.closest_km,
+                confidence: event.confidence,
+                downstream_sensors: event.downstream_sensors,
+              }]);
+            });
         });
 
         simRef.current.raf = requestAnimationFrame(tick);
@@ -1107,11 +1521,26 @@ export default function App() {
   const handleStop = useCallback(() => {
     cancelAnimationFrame(simRef.current.raf);
     simRef.current.entities.forEach(e => viewerRef.current?.entities.remove(e));
-    simRef.current = { path: [], paths: [], entities: [], cuasList: [], firedIds: new Set(), startWall: null, speed: 1, raf: null };
+    if (impactEstimateRef.current) {
+      viewerRef.current?.entities.remove(impactEstimateRef.current);
+      impactEstimateRef.current = null;
+    }
+    simRef.current = {
+      path: [],
+      paths: [],
+      entities: [],
+      cuasList: [],
+      sensorEvents: [],
+      alertedIds: new Set(),
+      startWall: null,
+      speed: 1,
+      raf: null,
+    };
     setSimActive(false);
     setSimPlaying(false);
     setSimElapsed(0);
     setIntercepts([]);
+    setThreatIntel(null);
   }, []);
 
   const handleClearAll = useCallback(() => {
@@ -1122,6 +1551,7 @@ export default function App() {
     losEntitiesRef.current.forEach(e => viewer.entities.remove(e));
     waypointEntitiesRef.current.forEach(e => viewer.entities.remove(e));
     if (pathLineRef.current) { viewer.entities.remove(pathLineRef.current); pathLineRef.current = null; }
+    if (impactEstimateRef.current) { viewer.entities.remove(impactEstimateRef.current); impactEstimateRef.current = null; }
     placedRef.current = [];
     losEntitiesRef.current = [];
     waypointEntitiesRef.current = [];
@@ -1166,6 +1596,7 @@ export default function App() {
         onStop={handleStop}
         intercepts={intercepts}
         elapsed={simElapsed}
+        threatIntel={threatIntel}
       />
       <ImpactWarningPanel
         analysis={impactAnalysis}

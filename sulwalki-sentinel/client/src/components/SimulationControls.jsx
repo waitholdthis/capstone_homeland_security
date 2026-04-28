@@ -1,4 +1,16 @@
-export default function SimulationControls({ active, playing, speed, setSpeed, onPlay, onStop, intercepts, elapsed, threatIntel }) {
+export default function SimulationControls({
+  active,
+  playing,
+  speed,
+  setSpeed,
+  onPlay,
+  onStop,
+  intercepts,
+  elapsed,
+  threatIntel,
+  planningEnv,
+  setPlanningEnv,
+}) {
   if (!active) return null;
 
   const fmt = (s) => {
@@ -17,7 +29,18 @@ export default function SimulationControls({ active, playing, speed, setSpeed, o
   const pct = (value) => `${Math.round((value ?? 0) * 100)}%`;
   const mc = threatIntel?.monte_carlo;
   const coverage = threatIntel?.coverage;
+  const live = threatIntel?.live_track;
   const topSensors = mc?.sensor_hits?.filter(hit => hit.probability > 0.05).slice(0, 3) ?? [];
+  const selectStyle = {
+    width: '100%',
+    background: '#050D18',
+    border: '1px solid #223344',
+    color: '#AABBCC',
+    fontFamily: 'monospace',
+    fontSize: 10,
+    padding: '3px 5px',
+  };
+  const setEnv = (key, value) => setPlanningEnv(prev => ({ ...prev, [key]: value }));
 
   return (
     <div style={{
@@ -111,6 +134,11 @@ export default function SimulationControls({ active, playing, speed, setSpeed, o
                 coverage {pct(coverage.coverage_ratio)} · longest gap {fmtDuration(coverage.longest_gap_s)}
               </div>
             )}
+            {live && (
+              <div style={{ marginTop: 4, color: live.fused_probability > 0.65 ? '#00FF7F' : '#FFAA00' }}>
+                live detect {pct(live.fused_probability)} · active {live.active_sensor_count} · now +/- {live.uncertainty_now_m}m
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -180,6 +208,67 @@ export default function SimulationControls({ active, playing, speed, setSpeed, o
                 Blind gap: {fmt(coverage.gaps[0].start_s)} to {fmt(coverage.gaps[0].end_s)}
               </div>
             )}
+          </div>
+        )}
+      </div>
+
+      <div style={{ width: 250, flexShrink: 0 }}>
+        <div style={{ color: '#445566', fontSize: 10, marginBottom: 4, letterSpacing: '0.1em' }}>
+          BATTLEFIELD ASSUMPTIONS
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, fontSize: 10 }}>
+          <label style={{ color: '#667788' }}>
+            Visibility
+            <select value={planningEnv.visibility} onChange={e => setEnv('visibility', e.target.value)} style={selectStyle}>
+              <option value="clear">Clear</option>
+              <option value="haze">Haze</option>
+              <option value="night">Night</option>
+              <option value="smoke">Smoke</option>
+              <option value="storm">Storm</option>
+            </select>
+          </label>
+          <label style={{ color: '#667788' }}>
+            Precip
+            <select value={planningEnv.precipitation} onChange={e => setEnv('precipitation', e.target.value)} style={selectStyle}>
+              <option value="none">None</option>
+              <option value="light">Light</option>
+              <option value="heavy">Heavy</option>
+              <option value="snow">Snow</option>
+            </select>
+          </label>
+          <label style={{ color: '#667788' }}>
+            Clutter
+            <select value={planningEnv.clutter} onChange={e => setEnv('clutter', e.target.value)} style={selectStyle}>
+              <option value="low">Low</option>
+              <option value="moderate">Moderate</option>
+              <option value="high">High</option>
+            </select>
+          </label>
+          <label style={{ color: '#667788' }}>
+            EW
+            <select value={planningEnv.ew} onChange={e => setEnv('ew', e.target.value)} style={selectStyle}>
+              <option value="none">None</option>
+              <option value="light">Light</option>
+              <option value="heavy">Heavy</option>
+              <option value="denied">Denied</option>
+            </select>
+          </label>
+        </div>
+        <label style={{ display: 'block', color: '#667788', fontSize: 10, marginTop: 6 }}>
+          Crew/Data Confidence {pct(planningEnv.operatorConfidence)}
+          <input
+            type="range"
+            min="0.45"
+            max="1"
+            step="0.05"
+            value={planningEnv.operatorConfidence}
+            onChange={e => setEnv('operatorConfidence', Number(e.target.value))}
+            style={{ width: '100%' }}
+          />
+        </label>
+        {live?.top_active?.length > 0 && (
+          <div style={{ color: '#789', fontSize: 10, marginTop: 5, lineHeight: 1.4 }}>
+            Live: {live.top_active.map(sensor => `${sensor.sensor_name} ${pct(sensor.probability)}`).join(' | ')}
           </div>
         )}
       </div>

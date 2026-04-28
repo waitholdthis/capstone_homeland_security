@@ -12,6 +12,13 @@ import { MISSILE_THREATS } from './data/missileThreat';
 
 const BACKEND = 'http://localhost:8000';
 const CESIUM_ION_TOKEN = import.meta.env.VITE_CESIUM_ION_TOKEN;
+const DEFAULT_PLANNING_ENV = {
+  visibility: 'clear',
+  precipitation: 'none',
+  clutter: 'moderate',
+  ew: 'none',
+  operatorConfidence: 0.85,
+};
 
 if (CESIUM_ION_TOKEN) {
   Cesium.Ion.defaultAccessToken = CESIUM_ION_TOKEN;
@@ -111,7 +118,37 @@ function sensorTypeQuality(sensorType) {
   return qualities[sensorType] ?? 0.72;
 }
 
-function sensorDetectionProbability(sensor, point) {
+function environmentDetectionFactor(sensor, point, env = DEFAULT_PLANNING_ENV) {
+  const visibility = {
+    clear: 1,
+    haze: 0.88,
+    night: 0.82,
+    smoke: 0.62,
+    storm: 0.54,
+  }[env.visibility] ?? 1;
+  const precipitation = {
+    none: 1,
+    light: 0.92,
+    heavy: 0.72,
+    snow: 0.66,
+  }[env.precipitation] ?? 1;
+  const clutter = {
+    low: 1,
+    moderate: point.alt < 250 ? 0.88 : 0.96,
+    high: point.alt < 500 ? 0.68 : 0.86,
+  }[env.clutter] ?? 1;
+  const ewBase = {
+    none: 1,
+    light: 0.9,
+    heavy: 0.72,
+    denied: 0.48,
+  }[env.ew] ?? 1;
+  const ewSensitive = ['radar', 'rf', 'ew', 'net'].includes(sensor.type);
+  const ew = ewSensitive ? ewBase : Math.max(0.82, ewBase);
+  return clamp(visibility * precipitation * clutter * ew * (env.operatorConfidence ?? 0.85), 0.18, 1.05);
+}
+
+function sensorDetectionProbability(sensor, point, env = DEFAULT_PLANNING_ENV) {
   const horizontalKm = geodesicDistanceKm(point.lat, point.lon, sensor.lat, sensor.lon);
   if (horizontalKm > sensor.rangeKm) return 0;
 
@@ -127,7 +164,7 @@ function sensorDetectionProbability(sensor, point) {
   const rangeScore = clamp(1 - horizontalKm / Math.max(sensor.rangeKm, 0.001), 0, 1);
   const horizonScore = clamp(1 - horizontalKm / Math.max(horizonKm, 0.001), 0, 1);
   const quality = sensorTypeQuality(sensor.type);
-  return clamp((0.25 + rangeScore * 0.55 + horizonScore * 0.2) * quality, 0.05, 0.98);
+  return clamp((0.25 + rangeScore * 0.55 + horizonScore * 0.2) * quality * environmentDetectionFactor(sensor, point, env), 0.03, 0.98);
 }
 
 function interpolateCrossingTime(p0, p1, sensor, entering) {
@@ -139,11 +176,11 @@ function interpolateCrossingTime(p0, p1, sensor, entering) {
   return p0.time_s + (p1.time_s - p0.time_s) * t;
 }
 
-function sensorCanSeePoint(sensor, point) {
-  return sensorDetectionProbability(sensor, point) > 0;
+function sensorCanSeePoint(sensor, point, env = DEFAULT_PLANNING_ENV) {
+  return sensorDetectionProbability(sensor, point, env) > 0;
 }
 
-function computeSensorEvents(paths, sensors) {
+function computeSensorEvents(paths, sensors, env = DEFAULT_PLANNING_ENV) {
   const endTime = Math.max(...paths.map(path => path[path.length - 1]?.time_s ?? 0), 0);
   const events = [];
 
@@ -163,7 +200,7 @@ function computeSensorEvents(paths, sensors) {
           closestPoint = point;
         }
 
-        const canSee = sensorCanSeePoint(sensor, point);
+        const canSee = sensorCanSeePoint(sensor, point, env);
         if (canSee && !inside) {
           inside = true;
           entryTime = i > 0 ? interpolateCrossingTime(path[i - 1], point, sensor, true) : point.time_s;
@@ -178,7 +215,7 @@ function computeSensorEvents(paths, sensors) {
         const rangeQuality = Math.max(0, 1 - closestKm / Math.max(sensor.rangeKm, 0.001));
         const dwellS = Math.max((exitTime ?? endTime) - entryTime, 0);
         const dwellQuality = Math.min(dwellS / 20, 1);
-        const closestProbability = closestPoint ? sensorDetectionProbability(sensor, closestPoint) : 0.25;
+        const closestProbability = closestPoint ? sensorDetectionProbability(sensor, closestPoint, env) : 0.25;
         const confidence = Math.min(0.98, Math.max(0.18, closestProbability * 0.72 + rangeQuality * 0.12 + dwellQuality * 0.16));
 
         events.push({
@@ -255,7 +292,7 @@ function perturbPath(path, threat, threatMode, sampleIndex) {
   });
 }
 
-function buildMonteCarloAssessment(paths, sensors, threat, threatMode, samplesPerTrack = 24) {
+function buildMonteCarloAssessment(paths, sensors, threat, threatMode, env = DEFAULT_PLANNING_ENV, samplesPerTrack = 24) {
   const samplePaths = [];
   paths.forEach((path, trackIndex) => {
     for (let i = 0; i < samplesPerTrack; i++) {
@@ -270,18 +307,18 @@ function buildMonteCarloAssessment(paths, sensors, threat, threatMode, samplesPe
   const radialErrorsM = impactPoints.map(point => geodesicDistanceKm(centerLat, centerLon, point.lat, point.lon) * 1000);
 
   const sampleEvents = samplePaths.flatMap(sample =>
-    computeSensorEvents([sample.path], sensors).map(event => ({
+    computeSensorEvents([sample.path], sensors, env).map(event => ({
       ...event,
       trackIndex: sample.trackIndex,
     }))
   );
   const firstDetectionTimes = samplePaths.map(sample => {
-    const events = computeSensorEvents([sample.path], sensors);
+    const events = computeSensorEvents([sample.path], sensors, env);
     return events[0]?.entry_time_s ?? null;
   }).filter(value => value != null);
   const leadTimes = samplePaths.map(sample => {
     const end = sample.path[sample.path.length - 1]?.time_s ?? 0;
-    const events = computeSensorEvents([sample.path], sensors);
+    const events = computeSensorEvents([sample.path], sensors, env);
     return events[0] ? end - events[0].entry_time_s : 0;
   });
   const sensorHits = sensors.map(sensor => {
@@ -310,7 +347,7 @@ function buildMonteCarloAssessment(paths, sensors, threat, threatMode, samplesPe
   };
 }
 
-function computeCoverageGaps(paths, sensors) {
+function computeCoverageGaps(paths, sensors, env = DEFAULT_PLANNING_ENV) {
   const gaps = [];
   let totalUncoveredS = 0;
   let longestGapS = 0;
@@ -322,7 +359,7 @@ function computeCoverageGaps(paths, sensors) {
     for (let i = 0; i < path.length; i++) {
       const point = path[i];
       const coverage = sensors
-        .map(sensor => ({ sensor, probability: sensorDetectionProbability(sensor, point) }))
+        .map(sensor => ({ sensor, probability: sensorDetectionProbability(sensor, point, env) }))
         .filter(item => item.probability > 0);
       const fusedCoverage = coverage.length
         ? 1 - coverage.reduce((miss, item) => miss * (1 - item.probability), 1)
@@ -358,7 +395,59 @@ function computeCoverageGaps(paths, sensors) {
   };
 }
 
-function estimateImpactIntelligence(paths, threat, threatMode, sensors) {
+function computeLiveTrackFusion(paths, sensors, threat, threatMode, elapsed, env = DEFAULT_PLANNING_ENV) {
+  const currentPoints = paths.map(path => pathPointAtTime(path, elapsed)).filter(Boolean);
+  if (!currentPoints.length) return null;
+
+  const endTime = Math.max(...paths.map(path => path[path.length - 1]?.time_s ?? 0), 0);
+  const finalPoints = paths.map(path => path[path.length - 1]).filter(Boolean);
+  const active = currentPoints.flatMap((point, trackIndex) =>
+    sensors
+      .map(sensor => ({
+        trackIndex,
+        sensor_id: sensor.id,
+        sensor_name: sensor.name,
+        probability: sensorDetectionProbability(sensor, point, env),
+        range_km: geodesicDistanceKm(point.lat, point.lon, sensor.lat, sensor.lon),
+      }))
+      .filter(item => item.probability > 0.05)
+  );
+  const fusedProbability = active.length
+    ? 1 - active.reduce((miss, item) => miss * (1 - item.probability), 1)
+    : 0;
+  const center = currentPoints.reduce((acc, point) => ({
+    lat: acc.lat + point.lat / currentPoints.length,
+    lon: acc.lon + point.lon / currentPoints.length,
+    alt: acc.alt + point.alt / currentPoints.length,
+  }), { lat: 0, lon: 0, alt: 0 });
+  const impactCenter = finalPoints.reduce((acc, point) => ({
+    lat: acc.lat + point.lat / finalPoints.length,
+    lon: acc.lon + point.lon / finalPoints.length,
+  }), { lat: 0, lon: 0 });
+  const maneuverRisk = threatMode === 'missile'
+    ? clamp((threat?.speedMach ?? 1) / 12, 0.2, 0.95)
+    : clamp((threat?.speedMs ?? 25) / 90, 0.15, 0.8);
+  const uncertaintyNowM = Math.round(
+    (threatMode === 'missile' ? (threat?.cepMeters ?? 100) : Math.max(40, (threat?.group ?? 1) * 50))
+      * (1.8 - fusedProbability)
+      * (1 + maneuverRisk * 0.45),
+  );
+
+  return {
+    lat: center.lat,
+    lon: center.lon,
+    alt: center.alt,
+    active_sensor_count: new Set(active.map(item => item.sensor_id)).size,
+    fused_probability: clamp(fusedProbability, 0, 0.99),
+    time_to_impact_s: Math.max(endTime - elapsed, 0),
+    impact_lat: impactCenter.lat,
+    impact_lon: impactCenter.lon,
+    uncertainty_now_m: uncertaintyNowM,
+    top_active: active.sort((a, b) => b.probability - a.probability).slice(0, 4),
+  };
+}
+
+function estimateImpactIntelligence(paths, threat, threatMode, sensors, env = DEFAULT_PLANNING_ENV) {
   const finalPoints = paths.map(path => path[path.length - 1]).filter(Boolean);
   if (!finalPoints.length) return null;
 
@@ -369,9 +458,9 @@ function estimateImpactIntelligence(paths, threat, threatMode, sensors) {
     time_s: Math.max(acc.time_s, point.time_s),
   }), { lat: 0, lon: 0, alt: 0, time_s: 0 });
 
-  const events = computeSensorEvents(paths, sensors);
-  const monteCarlo = buildMonteCarloAssessment(paths, sensors, threat, threatMode);
-  const coverage = computeCoverageGaps(paths, sensors);
+  const events = computeSensorEvents(paths, sensors, env);
+  const monteCarlo = buildMonteCarloAssessment(paths, sensors, threat, threatMode, env);
+  const coverage = computeCoverageGaps(paths, sensors, env);
   const baseCepM = threatMode === 'missile'
     ? (threat?.cepMeters ?? 100)
     : Math.max(20, (threat?.group ?? 1) * 35 + (threat?.speedMs ?? 25) * 1.5);
@@ -406,6 +495,8 @@ function estimateImpactIntelligence(paths, threat, threatMode, sensors) {
     first_time_to_impact_s: events[0]?.time_to_impact_s ?? center.time_s,
     monte_carlo: monteCarlo,
     coverage,
+    live_track: computeLiveTrackFusion(paths, sensors, threat, threatMode, 0, env),
+    environment: env,
     events,
   };
 }
@@ -727,6 +818,7 @@ export default function App() {
   const [selectedDrone, setSelectedDrone] = useState(DRONE_TYPES[0]);
   const [selectedMissile, setSelectedMissile] = useState(MISSILE_THREATS[0]);
   const [threatMode, setThreatMode] = useState('uas'); // 'uas' | 'missile'
+  const [planningEnv, setPlanningEnv] = useState(DEFAULT_PLANNING_ENV);
   const [losAnalysis, setLosAnalysis] = useState(null);
   const [losPending, setLosPending] = useState(false);
   const [losAwaitingTarget, setLosAwaitingTarget] = useState(false);
@@ -756,7 +848,8 @@ export default function App() {
   const [threatIntel, setThreatIntel] = useState(null);
   const simRef = useRef({
     path: [], paths: [], entities: [], cuasList: [], sensorEvents: [],
-    alertedIds: new Set(), startWall: null, speed: 1, raf: null,
+    threat: null, threatMode: 'uas', env: DEFAULT_PLANNING_ENV,
+    alertedIds: new Set(), lastFusionUpdate: 0, startWall: null, speed: 1, raf: null,
   });
 
   const refreshWaypointPreview = useCallback(() => {
@@ -1392,7 +1485,7 @@ export default function App() {
     const simPaths = threatMode === 'uas'
       ? Array.from({ length: count }, (_, i) => makeErraticUASPath(path, selectedDrone, i))
       : [path];
-    const intel = estimateImpactIntelligence(simPaths, threat, threatMode, cuasList);
+    const intel = estimateImpactIntelligence(simPaths, threat, threatMode, cuasList, planningEnv);
 
     if (impactEstimateRef.current) {
       viewer.entities.remove(impactEstimateRef.current);
@@ -1456,7 +1549,11 @@ export default function App() {
       entities: droneEntities,
       cuasList,
       sensorEvents: intel?.events ?? [],
+      threat,
+      threatMode,
+      env: planningEnv,
       alertedIds: new Set(),
+      lastFusionUpdate: 0,
       startWall: null,
       speed: simSpeed,
       raf: null,
@@ -1466,7 +1563,7 @@ export default function App() {
     setSimElapsed(0);
     setIntercepts([]);
     setThreatIntel(intel);
-  }, [threatMode, selectedDrone, selectedMissile, simSpeed]);
+  }, [threatMode, selectedDrone, selectedMissile, simSpeed, planningEnv]);
 
   // ---- Play / Pause ----
   const handlePlay = useCallback(() => {
@@ -1480,6 +1577,19 @@ export default function App() {
         const paths = simRef.current.paths.length ? simRef.current.paths : [simRef.current.path];
         const endTime = Math.max(...paths.map(p => p[p.length - 1]?.time_s ?? 0));
         if (elapsed >= endTime) { setSimPlaying(false); return; }
+
+        if (elapsed - simRef.current.lastFusionUpdate >= 1 || simRef.current.lastFusionUpdate === 0) {
+          simRef.current.lastFusionUpdate = elapsed;
+          const liveTrack = computeLiveTrackFusion(
+            paths,
+            simRef.current.cuasList,
+            simRef.current.threat,
+            simRef.current.threatMode,
+            elapsed,
+            simRef.current.env,
+          );
+          setThreatIntel(prev => prev ? { ...prev, live_track: liveTrack } : prev);
+        }
 
         simRef.current.entities.forEach((ent, i) => {
           const point = pathPointAtTime(paths[i] ?? paths[0], elapsed);
@@ -1531,7 +1641,11 @@ export default function App() {
       entities: [],
       cuasList: [],
       sensorEvents: [],
+      threat: null,
+      threatMode: 'uas',
+      env: DEFAULT_PLANNING_ENV,
       alertedIds: new Set(),
+      lastFusionUpdate: 0,
       startWall: null,
       speed: 1,
       raf: null,
@@ -1597,6 +1711,8 @@ export default function App() {
         intercepts={intercepts}
         elapsed={simElapsed}
         threatIntel={threatIntel}
+        planningEnv={planningEnv}
+        setPlanningEnv={setPlanningEnv}
       />
       <ImpactWarningPanel
         analysis={impactAnalysis}

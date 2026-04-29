@@ -530,6 +530,41 @@ export const CUAS_SYSTEMS = [
   },
 
   // ══════════════════════════════════════════════
+  //  MULTI-SENSOR DETECT / CLASSIFY / DEFEAT
+  // ══════════════════════════════════════════════
+
+  {
+    id: 'skyview-divr-mk2',
+    name: 'Skyview DIVR Mk-II',
+    developer: 'Skyview Systems Ltd. (UK)',
+    type: 'detection',
+    platform: 'fixed-site / vehicle / man-portable',
+    rangeKm: 4,
+    altitudeFtAGL: 5000,
+    sidc: 'SFGPUUD----',
+    color: '#7FFF00',
+    defeat: [],
+    detect: [1, 2, 3],
+    description: 'DIVR (Detect, Identify, Verify, and Respond) Mk-II is a multi-sensor passive counter-UAS detection and classification system. Fuses passive RF (900 MHz–6 GHz wideband), EO/IR camera tracking, and acoustic sensors into a single operator display. AI-powered signal processing identifies 800+ drone models from RF signature libraries without emitting radar pulses — near-zero electronic signature. Mk-II upgrade adds enhanced GPU processing for simultaneous multi-threat classification, improved direction-finding accuracy (±2° azimuth), and extended RF range to ~4 km vs. Group 1–3. Outputs real-time track data, drone make/model, operator location estimate, and video feed over NATO STANAG-compliant links and ATAK/CoT for integration with defeat effectors.',
+    notes: 'No organic defeat capability — purely detect-classify-cue. Pairs with RF jammers (M-LIDS, Silent Archer), kinetic (Coyote, IM-SHORAD), or RF-takeover (D-Fend RF-200) for kill chain completion. Deployed by British Army, UK Police Counter-Terrorism, and evaluated by several NATO partners. Open-source references: Skyview Systems product literature; NATO DIANA accelerator programme participant.',
+  },
+  {
+    id: 'caci-corian',
+    name: 'CACI Corian',
+    developer: 'CACI International / Mastodon Design',
+    type: 'rf-jam',
+    platform: 'vehicle (JLTV / HMMWV) / fixed-site',
+    rangeKm: 3,
+    altitudeFtAGL: 4000,
+    sidc: 'SFGPUUD----',
+    color: '#00BFFF',
+    defeat: [1, 2, 3],
+    detect: [1, 2, 3],
+    description: 'CACI Corian is a multi-domain electronic warfare counter-UAS system combining passive RF direction-finding, signal exploitation, and active broadband jamming defeat. Inherits Mastodon Design\'s SIGINT/EW pedigree following CACI acquisition. Detection layer performs real-time RF signal characterization and operator geo-location across 20 MHz–6 GHz. Defeat layer applies software-defined, adaptive waveform jamming across command-link (C2), video-downlink (FPV), and GPS L1/L2 frequencies simultaneously, with cognitive EW that shifts waveform to counter frequency-hopping links. Third mode: selective signal exploitation — captures drone telemetry for intelligence before or instead of jamming. Supports both manual engagement authority and automated rule-based responses under operator supervision. Exports threat tracks to ATAK, FAAD C2, and IBCS via NIEM-compliant data fabric.',
+    notes: 'CACI acquired Mastodon Design (2019), gaining ISR/EW rapid-development pipeline that underpins Corian. Fielded under multiple Army and SOCOM OTAs. Operationally tested in CENTCOM and EUCOM theatres. Cognitive jamming module handles encrypted/FHSS military-grade drone links that commercial jammers cannot defeat — key differentiator vs. DroneBuster-class systems. Open-source references: CACI International press releases; DoD USASpending.gov contract awards to CACI for C-UAS EW; FY2022–2023 Congressional Budget Justification C-UAS EW line items.',
+  },
+
+  // ══════════════════════════════════════════════
   //  NET / PHYSICAL CAPTURE
   // ══════════════════════════════════════════════
 

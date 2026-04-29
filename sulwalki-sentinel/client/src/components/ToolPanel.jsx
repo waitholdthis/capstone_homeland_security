@@ -7,6 +7,9 @@ import {
   THREAT_LEVEL_COLORS_UAS, GROUP_COLORS,
 } from '../data/droneTypes';
 import { MISSILE_THREATS, THREAT_LEVEL_COLORS, TRAJ_LABELS, TRAJ_COLORS } from '../data/missileThreat';
+import {
+  GRAPHIC_TYPES, PHASE_LINE_NAMES, GRAPHIC_COLOR_PRESETS,
+} from '../data/planningGraphics';
 
 const BTN = ({ active, onClick, children }) => (
   <button
@@ -365,6 +368,23 @@ export default function ToolPanel({
   waypointCount,
   onSimulate,
   onClearAll,
+  radarNetworkVisible,
+  onToggleRadarNetwork,
+  dataLinkConnected,
+  dataLinkTrackCount,
+  dataLinkVisible,
+  onToggleDataLink,
+  kmzLayers,
+  onImportKmz,
+  onRemoveKmzLayer,
+  onToggleKmzLayer,
+  // planning graphics
+  selectedGraphicType, setSelectedGraphicType,
+  graphicLabel, setGraphicLabel,
+  graphicColor, setGraphicColor,
+  graphicPointCount,
+  onFinishGraphic,
+  onUndoGraphicPoint,
 }) {
   const [expandedType, setExpandedType] = useState('kinetic');
   const [expandedTraj, setExpandedTraj] = useState('ballistic');
@@ -449,7 +469,76 @@ export default function ToolPanel({
         <BTN active={mode === 'draw-path'} onClick={() => setMode('draw-path')}>[04] SIMULATE THREAT</BTN>
         <BTN active={mode === 'impact-analysis'} onClick={() => setMode('impact-analysis')}>[05] IMPACT ANALYSIS</BTN>
         <BTN active={mode === 'place-layer'} onClick={() => setMode('place-layer')}>[06] DETECTION LAYERS</BTN>
+        <BTN active={mode === 'plan-graphics'} onClick={() => setMode('plan-graphics')}>[07] PLAN GRAPHICS</BTN>
       </Section>
+
+      {/* Radar network toggle */}
+      <div style={{ marginBottom: 14 }}>
+        <div style={{
+          color: '#334455', fontSize: 9, letterSpacing: '0.18em', marginBottom: 6,
+          textTransform: 'uppercase', borderBottom: '1px solid #1A2A3A', paddingBottom: 3,
+        }}>
+          RADAR NETWORK (15 SENSORS)
+        </div>
+        <button
+          onClick={onToggleRadarNetwork}
+          style={{
+            width: '100%', padding: '6px 10px',
+            background: radarNetworkVisible ? '#00BFFF18' : 'transparent',
+            border: `1px solid ${radarNetworkVisible ? '#00BFFF' : '#223344'}`,
+            color: radarNetworkVisible ? '#00BFFF' : '#445566',
+            fontFamily: 'monospace', fontSize: 10, cursor: 'pointer',
+            textAlign: 'left', letterSpacing: '0.06em',
+          }}
+        >
+          {radarNetworkVisible ? '◆ NETWORK VISIBLE' : '◇ NETWORK HIDDEN'}
+          <span style={{ float: 'right', fontSize: 9, color: '#334455' }}>
+            {radarNetworkVisible ? 'NATO + RU' : 'TOGGLE ON'}
+          </span>
+        </button>
+        {radarNetworkVisible && (
+          <div style={{ marginTop: 5, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {[['#00BFFF', 'NATO'], ['#FF3300', 'RUSSIA']].map(([col, label]) => (
+              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: col, border: `1px solid ${col}` }} />
+                <span style={{ color: col, fontSize: 8, fontFamily: 'monospace' }}>{label}</span>
+              </div>
+            ))}
+            <span style={{ color: '#223344', fontSize: 8, fontFamily: 'monospace' }}>ICAO+RK4 physics</span>
+          </div>
+        )}
+      </div>
+
+      {/* Data Link toggle */}
+      <div style={{ marginBottom: 14 }}>
+        <div style={{
+          color: '#334455', fontSize: 9, letterSpacing: '0.18em', marginBottom: 6,
+          textTransform: 'uppercase', borderBottom: '1px solid #1A2A3A', paddingBottom: 3,
+        }}>
+          OPEN ARCHITECTURE — DATA LINK
+        </div>
+        <button
+          onClick={onToggleDataLink}
+          style={{
+            width: '100%', padding: '6px 10px',
+            background: dataLinkVisible ? '#00FF7F18' : 'transparent',
+            border: `1px solid ${dataLinkConnected ? '#00FF7F' : '#445566'}`,
+            color: dataLinkConnected ? '#00FF7F' : '#556677',
+            fontFamily: 'monospace', fontSize: 10, cursor: 'pointer',
+            textAlign: 'left', letterSpacing: '0.06em',
+          }}
+        >
+          {dataLinkConnected ? '◆' : '◇'} TRACK FEED
+          <span style={{ float: 'right', fontSize: 9, color: dataLinkConnected ? '#00FF7F88' : '#334455' }}>
+            {dataLinkConnected ? `${dataLinkTrackCount} LIVE` : 'OFFLINE'}
+          </span>
+        </button>
+        {dataLinkConnected && (
+          <div style={{ marginTop: 3, fontSize: 8, color: '#334455', fontFamily: 'monospace' }}>
+            ws://localhost:8000/ws/tracks &nbsp;·&nbsp; POST /api/tracks/ingest
+          </div>
+        )}
+      </div>
 
       {/* ── UNIT PLACEMENT ── */}
       {mode === 'place-unit' && (
@@ -960,6 +1049,294 @@ export default function ToolPanel({
           Terrain LOS analysis computed.
         </div>
       )}
+
+      {/* ── PLAN GRAPHICS ── */}
+      {mode === 'plan-graphics' && (
+        <>
+          {/* Graphic type selector */}
+          <Section title="Graphic Type">
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
+              {GRAPHIC_TYPES.map(g => {
+                const active = selectedGraphicType === g.id;
+                return (
+                  <button
+                    key={g.id}
+                    onClick={() => setSelectedGraphicType(g.id)}
+                    style={{
+                      padding: '4px 8px',
+                      background: active ? `${g.defaultColor}22` : 'transparent',
+                      border: `1px solid ${active ? g.defaultColor : '#223344'}`,
+                      color: active ? g.defaultColor : '#556677',
+                      fontFamily: 'monospace',
+                      fontSize: 9,
+                      cursor: 'pointer',
+                      letterSpacing: '0.05em',
+                    }}
+                  >
+                    {g.shortLabel}
+                  </button>
+                );
+              })}
+            </div>
+            {/* Description for selected type */}
+            {(() => {
+              const gt = GRAPHIC_TYPES.find(g => g.id === selectedGraphicType);
+              return gt ? (
+                <div style={{ color: '#445566', fontSize: 9, lineHeight: 1.6, fontFamily: 'monospace', marginBottom: 8 }}>
+                  {gt.label}: {gt.instructions}
+                </div>
+              ) : null;
+            })()}
+          </Section>
+
+          {/* Label input */}
+          <Section title="Label">
+            <input
+              value={graphicLabel}
+              onChange={e => setGraphicLabel(e.target.value)}
+              placeholder="e.g. PL BLUE"
+              style={{
+                width: '100%', boxSizing: 'border-box',
+                background: '#050D18', border: '1px solid #223344',
+                color: '#AABBCC', fontFamily: 'monospace', fontSize: 11,
+                padding: '6px 8px', marginBottom: 6,
+              }}
+            />
+            {/* Quick-labels for phase lines */}
+            {selectedGraphicType === 'phase-line' && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
+                {PHASE_LINE_NAMES.map(({ name, color }) => (
+                  <button
+                    key={name}
+                    onClick={() => { setGraphicLabel(name); setGraphicColor(color); }}
+                    style={{
+                      padding: '3px 7px',
+                      background: graphicLabel === name ? `${color}22` : 'transparent',
+                      border: `1px solid ${color}66`,
+                      color, fontFamily: 'monospace', fontSize: 8,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </Section>
+
+          {/* Color picker */}
+          <Section title="Color">
+            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 6 }}>
+              {GRAPHIC_COLOR_PRESETS.map(c => (
+                <button
+                  key={c}
+                  onClick={() => setGraphicColor(c)}
+                  title={c}
+                  style={{
+                    width: 22, height: 22, background: c,
+                    border: graphicColor === c ? '2px solid #FFFFFF' : '1px solid #223344',
+                    cursor: 'pointer',
+                  }}
+                />
+              ))}
+              <input
+                type="color"
+                value={graphicColor}
+                onChange={e => setGraphicColor(e.target.value)}
+                style={{ width: 22, height: 22, background: 'transparent', border: '1px solid #223344', padding: 0, cursor: 'pointer' }}
+              />
+            </div>
+          </Section>
+
+          {/* Drawing status + controls */}
+          <Section title="Drawing">
+            <div style={{
+              padding: '8px 10px', background: '#050D18', border: '1px solid #0D1E2E',
+              fontFamily: 'monospace', fontSize: 9, marginBottom: 8,
+            }}>
+              <div style={{ color: '#334455', marginBottom: 3 }}>
+                Points placed: <span style={{ color: graphicPointCount > 0 ? graphicColor : '#334455' }}>{graphicPointCount}</span>
+              </div>
+              {(() => {
+                const gt = GRAPHIC_TYPES.find(g => g.id === selectedGraphicType);
+                if (!gt) return null;
+                const need = gt.minPoints - graphicPointCount;
+                if (graphicPointCount === 0) return <div style={{ color: '#445566' }}>Click map to begin.</div>;
+                if (need > 0) return <div style={{ color: '#FFAA00' }}>Need {need} more point{need !== 1 ? 's' : ''} to finish.</div>;
+                return <div style={{ color: '#00FF7F' }}>Ready — add more points or finish.</div>;
+              })()}
+            </div>
+
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button
+                onClick={onUndoGraphicPoint}
+                disabled={graphicPointCount === 0}
+                style={{
+                  flex: 1, padding: '6px 0',
+                  background: 'transparent',
+                  border: `1px solid ${graphicPointCount > 0 ? '#445566' : '#1A2A3A'}`,
+                  color: graphicPointCount > 0 ? '#7799AA' : '#334455',
+                  fontFamily: 'monospace', fontSize: 9,
+                  cursor: graphicPointCount > 0 ? 'pointer' : 'not-allowed',
+                }}
+              >
+                ◀ UNDO
+              </button>
+              <button
+                onClick={onFinishGraphic}
+                disabled={(() => {
+                  const gt = GRAPHIC_TYPES.find(g => g.id === selectedGraphicType);
+                  return !gt || graphicPointCount < gt.minPoints;
+                })()}
+                style={{
+                  flex: 2, padding: '6px 0',
+                  background: (() => {
+                    const gt = GRAPHIC_TYPES.find(g => g.id === selectedGraphicType);
+                    return gt && graphicPointCount >= gt.minPoints ? `${graphicColor}22` : 'transparent';
+                  })(),
+                  border: `1px solid ${(() => {
+                    const gt = GRAPHIC_TYPES.find(g => g.id === selectedGraphicType);
+                    return gt && graphicPointCount >= gt.minPoints ? graphicColor : '#1A2A3A';
+                  })()}`,
+                  color: (() => {
+                    const gt = GRAPHIC_TYPES.find(g => g.id === selectedGraphicType);
+                    return gt && graphicPointCount >= gt.minPoints ? graphicColor : '#334455';
+                  })(),
+                  fontFamily: 'monospace', fontSize: 10, letterSpacing: '0.08em',
+                  cursor: (() => {
+                    const gt = GRAPHIC_TYPES.find(g => g.id === selectedGraphicType);
+                    return gt && graphicPointCount >= gt.minPoints ? 'pointer' : 'not-allowed';
+                  })(),
+                }}
+              >
+                ✓ FINISH GRAPHIC
+              </button>
+            </div>
+          </Section>
+        </>
+      )}
+
+      {/* ── KMZ / KML IMPORT ── */}
+      <div style={{ marginBottom: 70 }}>
+        <div style={{
+          color: '#334455', fontSize: 9, letterSpacing: '0.18em', marginBottom: 6,
+          textTransform: 'uppercase', borderBottom: '1px solid #1A2A3A', paddingBottom: 3,
+        }}>
+          IMPORT KMZ / KML
+        </div>
+
+        {/* File picker trigger */}
+        <label style={{ display: 'block', cursor: 'pointer' }}>
+          <input
+            type="file"
+            accept=".kmz,.kml"
+            multiple
+            style={{ display: 'none' }}
+            onChange={e => {
+              Array.from(e.target.files ?? []).forEach(f => onImportKmz(f));
+              e.target.value = '';
+            }}
+          />
+          <div style={{
+            width: '100%',
+            boxSizing: 'border-box',
+            padding: '7px 10px',
+            background: 'transparent',
+            border: '1px solid #2A4A5A',
+            color: '#4A8A9A',
+            fontFamily: 'monospace',
+            fontSize: 10,
+            letterSpacing: '0.08em',
+            textAlign: 'center',
+            cursor: 'pointer',
+          }}>
+            + BROWSE KMZ / KML FILES
+          </div>
+        </label>
+
+        {/* Loaded layer list */}
+        {kmzLayers.length > 0 && (
+          <div style={{ marginTop: 6 }}>
+            {kmzLayers.map(layer => (
+              <div
+                key={layer.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  padding: '4px 0',
+                  borderBottom: '1px solid #0D1E2A',
+                  fontSize: 9,
+                  fontFamily: 'monospace',
+                }}
+              >
+                {/* Visibility toggle */}
+                <button
+                  onClick={() => onToggleKmzLayer(layer.id)}
+                  title={layer.visible ? 'Hide layer' : 'Show layer'}
+                  style={{
+                    width: 16,
+                    height: 16,
+                    flexShrink: 0,
+                    background: layer.visible ? '#00BFFF22' : 'transparent',
+                    border: `1px solid ${layer.visible ? '#00BFFF' : '#334455'}`,
+                    color: layer.visible ? '#00BFFF' : '#445566',
+                    fontFamily: 'monospace',
+                    fontSize: 8,
+                    cursor: 'pointer',
+                    padding: 0,
+                    lineHeight: 1,
+                  }}
+                >
+                  {layer.visible ? '●' : '○'}
+                </button>
+
+                {/* Layer name */}
+                <span
+                  style={{
+                    flex: 1,
+                    color: layer.visible ? '#7799AA' : '#445566',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                  title={layer.name}
+                >
+                  {layer.name}
+                </span>
+
+                {/* Remove */}
+                <button
+                  onClick={() => onRemoveKmzLayer(layer.id)}
+                  title="Remove layer"
+                  style={{
+                    width: 16,
+                    height: 16,
+                    flexShrink: 0,
+                    background: 'transparent',
+                    border: '1px solid #442222',
+                    color: '#883333',
+                    fontFamily: 'monospace',
+                    fontSize: 8,
+                    cursor: 'pointer',
+                    padding: 0,
+                    lineHeight: 1,
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {kmzLayers.length === 0 && (
+          <div style={{ color: '#2A3A4A', fontSize: 8, marginTop: 4, fontFamily: 'monospace' }}>
+            Supports KMZ + KML (placemarks, lines, polygons, ground overlays).
+            Compatible with Google Earth exports.
+          </div>
+        )}
+      </div>
 
       {/* Clear */}
       <div style={{ position: 'fixed', bottom: 0, left: 0, width: 300, padding: '10px', background: 'rgba(3,8,15,0.97)', borderTop: '1px solid #0D1E2E', boxSizing: 'border-box', zIndex: 11 }}>

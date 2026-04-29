@@ -5,12 +5,17 @@ import "cesium/Build/Cesium/Widgets/widgets.css";
 import ToolPanel from './components/ToolPanel';
 import SimulationControls from './components/SimulationControls';
 import ImpactWarningPanel from './components/ImpactWarningPanel';
+import RadarAlertFeed from './components/RadarAlertFeed';
+import DataLinkPanel from './components/DataLinkPanel';
 import { FACTIONS, UNIT_TYPES } from './data/militaryUnits';
 import { CUAS_SYSTEMS } from './data/counterUAS';
 import { DRONE_TYPES } from './data/droneTypes';
 import { MISSILE_THREATS } from './data/missileThreat';
+import { RADAR_SYSTEMS } from './data/radarSystems';
+import { GRAPHIC_TYPE_MAP } from './data/planningGraphics';
 
 const BACKEND = 'http://localhost:8000';
+const WS_TRACKS_URL = 'ws://localhost:8000/ws/tracks';
 const CESIUM_ION_TOKEN = import.meta.env.VITE_CESIUM_ION_TOKEN;
 const DEFAULT_PLANNING_ENV = {
   visibility: 'clear',
@@ -165,6 +170,34 @@ function pathPointAtTime(path, elapsed) {
     lon: p0.lon + (p1.lon - p0.lon) * t,
     alt: p0.alt + (p1.alt - p0.alt) * t,
   };
+}
+
+function ensureTimedPath(path, speedMs = 250) {
+  if (!Array.isArray(path) || path.length < 2) return [];
+
+  let elapsed = Number.isFinite(path[0].time_s) ? Number(path[0].time_s) : 0;
+  return path.map((point, index) => {
+    if (index === 0) {
+      return {
+        ...point,
+        time_s: elapsed,
+        alt: Number.isFinite(point.alt) ? point.alt : 0,
+      };
+    }
+
+    const previous = path[index - 1];
+    const fallbackDelta = geodesicDistanceKm(previous.lat, previous.lon, point.lat, point.lon) * 1000 / Math.max(speedMs, 1);
+    const givenTime = Number(point.time_s);
+    elapsed = Number.isFinite(givenTime) && givenTime > elapsed
+      ? givenTime
+      : elapsed + Math.max(fallbackDelta, 0.1);
+
+    return {
+      ...point,
+      time_s: elapsed,
+      alt: Number.isFinite(point.alt) ? point.alt : 0,
+    };
+  });
 }
 
 function radarHorizonKm(sensorHeightM, targetAltM) {
@@ -857,7 +890,8 @@ function makeDragGroup(prefix) {
 }
 
 function markDraggable(entity, options = {}) {
-  entity._draggable = true;
+  entity._selectable = true;
+  entity._draggable = options.draggable !== false;
   entity._dragKind = options.kind ?? 'entity';
   entity._dragGroup = options.group ?? makeDragGroup(options.kind ?? 'entity');
   entity._waypointIndex = options.waypointIndex;
@@ -947,6 +981,7 @@ export default function App() {
   const handlerRef = useRef(null);
   const firstPointRef = useRef(null);
   const losEntitiesRef = useRef([]);
+  const markupEntitiesRef = useRef([]);
   const dragRef = useRef({ active: false, moved: false, group: null, entity: null });
   const selectedMapItemRef = useRef(null);
 
@@ -972,6 +1007,29 @@ export default function App() {
   const impactAnimationRef = useRef({ raf: null, entity: null, startWall: null, path: [] });
   const impactClickRef = useRef(null); // first click = launch
 
+  // Radar network
+  const [radarNetworkVisible, setRadarNetworkVisible] = useState(true);
+  const radarEntitiesRef = useRef([]);
+
+  // Planning graphics
+  const [selectedGraphicType, setSelectedGraphicType] = useState('phase-line');
+  const [graphicLabel, setGraphicLabel] = useState('PL BLUE');
+  const [graphicColor, setGraphicColor] = useState('#00FFFF');
+  const [graphicPointCount, setGraphicPointCount] = useState(0);
+  const graphicPointsRef = useRef([]);
+  const graphicPreviewRef = useRef({ dots: [], line: null });
+
+  // Open architecture — external track feed
+  const [externalTracks, setExternalTracks] = useState({});   // track_id → track
+  const [dataLinkConnected, setDataLinkConnected] = useState(false);
+  const [dataLinkVisible, setDataLinkVisible] = useState(false);
+  const externalTrackEntitiesRef = useRef({});                 // track_id → Cesium entity
+  const wsRef = useRef(null);
+
+  // KMZ / KML layer import
+  const [kmzLayers, setKmzLayers] = useState([]);             // { id, name, visible }
+  const kmzSourcesRef = useRef({});                           // id → CesiumKmlDataSource
+
   // Missile sim: first click = launch, second click = target
   const missileClickRef = useRef(null); // { lat, lon, alt }
 
@@ -989,6 +1047,7 @@ export default function App() {
   const [simElapsed, setSimElapsed] = useState(0);
   const [intercepts, setIntercepts] = useState([]);
   const [threatIntel, setThreatIntel] = useState(null);
+  const [simSensorEvents, setSimSensorEvents] = useState([]);
   const simRef = useRef({
     path: [], paths: [], entities: [], cuasList: [], sensorEvents: [],
     threat: null, threatMode: 'uas', env: DEFAULT_PLANNING_ENV,
@@ -1045,7 +1104,7 @@ export default function App() {
   }, [selectedMissile, threatMode]);
 
   const selectMapItem = useCallback((entity) => {
-    if (!entity?._draggable) {
+    if (!entity?._selectable) {
       selectedMapItemRef.current = null;
       setSelectedMapItem(null);
       return;
@@ -1075,6 +1134,7 @@ export default function App() {
       viewer.entities.remove(entity);
       placedRef.current = placedRef.current.filter(e => e !== entity);
       waypointEntitiesRef.current = waypointEntitiesRef.current.filter(e => e !== entity);
+      markupEntitiesRef.current = markupEntitiesRef.current.filter(e => e !== entity);
     });
 
     waypointIndexes.forEach(index => {
@@ -1111,6 +1171,295 @@ export default function App() {
     }
     impactAnimationRef.current = { raf: null, entity: null, startWall: null, path: [] };
   }, []);
+
+  // ── Open architecture — WebSocket track feed ───────────────────────────────
+
+  useEffect(() => {
+    let ws;
+    let reconnectTimer;
+
+    function connect() {
+      ws = new WebSocket(WS_TRACKS_URL);
+      wsRef.current = ws;
+
+      ws.onopen = () => setDataLinkConnected(true);
+
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          if (msg.type === 'snapshot') {
+            const map = {};
+            (msg.tracks ?? []).forEach(t => { map[t.track_id] = t; });
+            setExternalTracks(map);
+          } else if (msg.type === 'track_update') {
+            setExternalTracks(prev => ({ ...prev, [msg.track.track_id]: msg.track }));
+          } else if (msg.type === 'tracks_expired') {
+            setExternalTracks(prev => {
+              const next = { ...prev };
+              (msg.ids ?? []).forEach(id => delete next[id]);
+              return next;
+            });
+          }
+        } catch { /* ignore malformed */ }
+      };
+
+      ws.onclose = () => {
+        setDataLinkConnected(false);
+        reconnectTimer = setTimeout(connect, 5000);
+      };
+
+      ws.onerror = () => ws.close();
+    }
+
+    connect();
+
+    return () => {
+      clearTimeout(reconnectTimer);
+      wsRef.current = null;
+      ws?.close();
+    };
+  }, []);
+
+  // ── Sync external tracks → Cesium entities ────────────────────────────────
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+
+    const AFFIL_CESIUM = {
+      friendly: Cesium.Color.fromCssColorString('#00BFFF'),
+      hostile:  Cesium.Color.fromCssColorString('#FF3300'),
+      suspect:  Cesium.Color.fromCssColorString('#FF6600'),
+      neutral:  Cesium.Color.fromCssColorString('#00FF7F'),
+      pending:  Cesium.Color.fromCssColorString('#FFD700'),
+      unknown:  Cesium.Color.fromCssColorString('#AAAAAA'),
+    };
+
+    const currentIds = new Set(Object.keys(externalTracks));
+    const entityIds = new Set(Object.keys(externalTrackEntitiesRef.current));
+
+    // Remove stale entities
+    entityIds.forEach(id => {
+      if (!currentIds.has(id)) {
+        viewer.entities.remove(externalTrackEntitiesRef.current[id]);
+        delete externalTrackEntitiesRef.current[id];
+      }
+    });
+
+    // Upsert live tracks
+    Object.values(externalTracks).forEach(track => {
+      const pos = Cesium.Cartesian3.fromDegrees(track.lon, track.lat, track.alt_m ?? 0);
+      const color = AFFIL_CESIUM[track.affiliation] ?? AFFIL_CESIUM.unknown;
+      const label = track.callsign || track.track_id;
+
+      if (externalTrackEntitiesRef.current[track.track_id]) {
+        const entity = externalTrackEntitiesRef.current[track.track_id];
+        entity.position = pos;
+        if (entity.label) entity.label.text = label;
+      } else {
+        const entity = viewer.entities.add({
+          position: pos,
+          point: {
+            pixelSize: 8,
+            color,
+            outlineColor: Cesium.Color.BLACK,
+            outlineWidth: 1,
+          },
+          label: {
+            text: label,
+            font: '9px monospace',
+            fillColor: color,
+            outlineColor: Cesium.Color.BLACK,
+            outlineWidth: 2,
+            style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+            verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            pixelOffset: new Cesium.Cartesian2(0, -10),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        });
+        entity._selectable = false;  // don't allow drag/delete of external tracks
+        externalTrackEntitiesRef.current[track.track_id] = entity;
+      }
+    });
+  }, [externalTracks]);
+
+  // ── Planning graphics helpers ──────────────────────────────────────────────
+
+  const clearGraphicPreview = useCallback(() => {
+    const viewer = viewerRef.current;
+    if (viewer) {
+      graphicPreviewRef.current.dots.forEach(e => viewer.entities.remove(e));
+      if (graphicPreviewRef.current.line) viewer.entities.remove(graphicPreviewRef.current.line);
+    }
+    graphicPreviewRef.current = { dots: [], line: null };
+  }, []);
+
+  const finishGraphic = useCallback(() => {
+    const viewer = viewerRef.current;
+    const points = graphicPointsRef.current;
+    const gt = GRAPHIC_TYPE_MAP[selectedGraphicType];
+    if (!viewer || !gt || points.length < gt.minPoints) return;
+
+    clearGraphicPreview();
+
+    const color = cesiumColorFromHex(graphicColor);
+    const label = graphicLabel.trim() || gt.shortLabel;
+    const group = makeDragGroup('graphic');
+
+    const positions = points.map(p =>
+      Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.alt + 8)
+    );
+
+    // Closed shapes (NAI, OBJ)
+    if (gt.closed && positions.length >= 3) {
+      const poly = viewer.entities.add({
+        polygon: {
+          hierarchy: new Cesium.PolygonHierarchy(positions),
+          material: new Cesium.ColorMaterialProperty(color.withAlpha(0.12)),
+          outline: true, outlineColor: color, outlineWidth: gt.lineWidth,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        },
+      });
+      markupEntitiesRef.current.push(
+        markDraggable(poly, { kind: 'graphic', group, label, draggable: false })
+      );
+    }
+
+    // Line graphics (everything except checkpoint)
+    if (positions.length >= 2 && gt.id !== 'checkpoint') {
+      let material;
+      if (gt.arrowHead) {
+        material = new Cesium.PolylineArrowMaterialProperty(color);
+      } else if (gt.dashed) {
+        material = new Cesium.PolylineDashMaterialProperty({ color, dashLength: 16 });
+      } else {
+        material = color;
+      }
+
+      const linePositions = gt.closed
+        ? [...positions, positions[0]]  // close the polygon outline
+        : positions;
+
+      const line = viewer.entities.add({
+        polyline: {
+          positions: linePositions,
+          width: gt.lineWidth,
+          material,
+          clampToGround: !gt.arrowHead,
+        },
+      });
+      markupEntitiesRef.current.push(
+        markDraggable(line, { kind: 'graphic', group, label, draggable: false })
+      );
+    }
+
+    // Labels
+    const addLabel = (pos, text, offset = new Cesium.Cartesian2(0, -18)) => {
+      const e = viewer.entities.add({
+        position: pos,
+        label: {
+          text,
+          font: 'bold 11px monospace',
+          fillColor: color,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 3,
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          pixelOffset: offset,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      });
+      markupEntitiesRef.current.push(
+        markDraggable(e, { kind: 'graphic', group, label: text, draggable: false })
+      );
+    };
+
+    if (gt.id === 'checkpoint') {
+      // Single point + label
+      const pos = Cesium.Cartesian3.fromDegrees(points[0].lon, points[0].lat, points[0].alt + 12);
+      const dot = viewer.entities.add({
+        position: pos,
+        point: {
+          pixelSize: 14,
+          color,
+          outlineColor: Cesium.Color.WHITE,
+          outlineWidth: 2,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        label: {
+          text: label,
+          font: 'bold 11px monospace',
+          fillColor: color,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 3,
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          pixelOffset: new Cesium.Cartesian2(0, -22),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      });
+      markupEntitiesRef.current.push(
+        markDraggable(dot, { kind: 'graphic', group, label, draggable: false })
+      );
+    } else if (!gt.closed) {
+      // Midpoint label for all open line graphics
+      const mid = positions[Math.floor(positions.length / 2)];
+      addLabel(mid, label);
+
+      // Phase line and FSCL: also label both endpoints
+      if (gt.endLabels) {
+        addLabel(positions[0], label);
+        addLabel(positions[positions.length - 1], label);
+      }
+    } else {
+      // Closed shape: centroid label
+      const cx = points.reduce((s, p) => s + p.lon, 0) / points.length;
+      const cy = points.reduce((s, p) => s + p.lat, 0) / points.length;
+      const alt = points.reduce((s, p) => s + p.alt, 0) / points.length;
+      addLabel(
+        Cesium.Cartesian3.fromDegrees(cx, cy, alt + 20),
+        label,
+        new Cesium.Cartesian2(0, 0)
+      );
+    }
+
+    // Reset drawing state
+    graphicPointsRef.current = [];
+    setGraphicPointCount(0);
+  }, [selectedGraphicType, graphicLabel, graphicColor, clearGraphicPreview]);
+
+  const undoLastGraphicPoint = useCallback(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || graphicPointsRef.current.length === 0) return;
+
+    graphicPointsRef.current.pop();
+    const newCount = graphicPointsRef.current.length;
+    setGraphicPointCount(newCount);
+
+    // Remove last preview dot
+    const lastDot = graphicPreviewRef.current.dots.pop();
+    if (lastDot) viewer.entities.remove(lastDot);
+
+    // Rebuild preview line from remaining points
+    if (graphicPreviewRef.current.line) {
+      viewer.entities.remove(graphicPreviewRef.current.line);
+      graphicPreviewRef.current.line = null;
+    }
+    if (newCount >= 2) {
+      const gt = GRAPHIC_TYPE_MAP[selectedGraphicType];
+      const color = cesiumColorFromHex(graphicColor);
+      const positions = graphicPointsRef.current.map(p =>
+        Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.alt + 8)
+      );
+      const closed = gt?.closed && positions.length >= 3;
+      graphicPreviewRef.current.line = viewer.entities.add({
+        polyline: {
+          positions: closed ? [...positions, positions[0]] : positions,
+          width: 2,
+          material: new Cesium.PolylineDashMaterialProperty({ color, dashLength: 10 }),
+          clampToGround: true,
+        },
+      });
+    }
+  }, [selectedGraphicType, graphicColor]);
 
   const startImpactAnimation = useCallback((analysis, missile) => {
     const viewer = viewerRef.current;
@@ -1191,6 +1540,88 @@ export default function App() {
       viewer.destroy();
     };
   }, []);
+
+  // ---- Pre-seed radar network on globe ----
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+
+    // Remove existing radar entities
+    radarEntitiesRef.current.forEach(e => viewer.entities.remove(e));
+    radarEntitiesRef.current = [];
+
+    if (!radarNetworkVisible) return;
+
+    RADAR_SYSTEMS.forEach(radar => {
+      const color = cesiumColorFromHex(radar.color);
+      const radiusM = radar.maxRangeKm * 1000;
+      const ceilM = Math.max(radar.maxAltM ?? 15000, radiusM * 0.1);
+
+      // Coverage dome (ellipsoid hemisphere)
+      const dome = viewer.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(radar.lon, radar.lat, radar.elevationM ?? 50),
+        ellipsoid: {
+          radii: new Cesium.Cartesian3(radiusM, radiusM, Math.min(ceilM, radiusM)),
+          minimumCone: 0,
+          maximumCone: Cesium.Math.PI_OVER_TWO,
+          material: new Cesium.ColorMaterialProperty(color.withAlpha(radar.nation === 'Russia' ? 0.05 : 0.04)),
+          outline: true,
+          outlineColor: color.withAlpha(0.45),
+          outlineWidth: 1,
+          slicePartitions: 32, stackPartitions: 12, subdivisions: 64,
+        },
+      });
+
+      // Sensor marker point
+      const marker = viewer.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(radar.lon, radar.lat, (radar.elevationM ?? 50) + 10),
+        point: {
+          pixelSize: radar.nation === 'Russia' ? 9 : 8,
+          color,
+          outlineColor: Cesium.Color.WHITE,
+          outlineWidth: 1,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        label: {
+          text: radar.name,
+          font: '9px monospace',
+          pixelOffset: new Cesium.Cartesian2(0, -18),
+          fillColor: color,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 2,
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          scaleByDistance: new Cesium.NearFarScalar(5e4, 1.0, 4e5, 0.0),
+        },
+      });
+
+      // Attach sensor data so it participates in the detection pipeline
+      const sensorData = {
+        id:             radar.id,
+        name:           radar.name,
+        type:           radar.type ?? 'radar',
+        domains:        radar.domains ?? ['radar'],
+        rangeKm:        radar.maxRangeKm,
+        altitudeFtAGL:  ((radar.maxAltM ?? 15000) / 0.3048),
+        quality:        radar.quality ?? 0.85,
+        lat:            radar.lat,
+        lon:            radar.lon,
+        terrainAlt:     radar.elevationM ?? 50,
+        // Physics fields
+        refRcsM2:       radar.refRcsM2 ?? 1.0,
+        maxRangeKm:     radar.maxRangeKm,
+        elevationM:     radar.elevationM ?? 50,
+        maxAltM:        radar.maxAltM ?? 15000,
+        minAltM:        radar.minAltM ?? 0,
+        frequencyBand:  radar.frequencyBand ?? '?',
+        nation:         radar.nation ?? 'UNK',
+      };
+      dome._cuasData   = sensorData;
+      marker._cuasData = sensorData;
+
+      radarEntitiesRef.current.push(dome, marker);
+    });
+  }, [radarNetworkVisible]);
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -1286,16 +1717,30 @@ export default function App() {
       }
       selectMapItem(null);
 
-      const cartesian = viewer.scene.pickPosition(click.position);
+      // pickPosition needs a rendered depth value — fall back to ellipsoid when tiles haven't loaded
+      let cartesian = viewer.scene.pickPosition(click.position);
+      if (!Cesium.defined(cartesian)) {
+        const ray = viewer.camera.getPickRay(click.position);
+        if (Cesium.defined(ray)) cartesian = viewer.scene.globe.pick(ray, viewer.scene);
+      }
       if (!Cesium.defined(cartesian)) return;
       const cartographic = Cesium.Cartographic.fromCartesian(cartesian);
       const lon = Cesium.Math.toDegrees(cartographic.longitude);
       const lat = Cesium.Math.toDegrees(cartographic.latitude);
 
+      // Safe terrain height — falls back to depth-buffer height when provider isn't ready
+      const sampleHeight = async (cart) => {
+        try {
+          const [s] = await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, [cart]);
+          return s.height ?? cart.height ?? 0;
+        } catch {
+          return cart.height ?? 0;
+        }
+      };
+
       // ── LOS ANALYSIS ──
       if (mode === 'los') {
-        const sampled = await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, [cartographic]);
-        const height = sampled[0].height ?? 0;
+        const height = await sampleHeight(cartographic);
         const observerAglM = 10;
         const targetAglM = 50;
         if (!firstPointRef.current) {
@@ -1361,7 +1806,12 @@ export default function App() {
               Cesium.Math.lerp(firstPoint.cartographic.latitude, targetCartographic.latitude, t),
             ));
           }
-          const sampledProfile = await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, profilePoints);
+          let sampledProfile;
+          try {
+            sampledProfile = await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, profilePoints);
+          } catch {
+            sampledProfile = profilePoints.map(p => ({ height: p.height ?? 0 }));
+          }
           const heights = sampledProfile.map(p => p.height ?? 0);
           let result;
           try {
@@ -1591,8 +2041,8 @@ export default function App() {
 
       // ── DRAW UAS PATH ──
       if (mode === 'draw-path' && threatMode === 'uas') {
-        const sampled = await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, [cartographic]);
-        const droneAlt = sampled[0].height + (selectedDrone?.aglMeters ?? 100);
+        const terrainH = await sampleHeight(cartographic);
+        const droneAlt = terrainH + (selectedDrone?.aglMeters ?? 100);
         waypointsRef.current.push({ lat, lon, alt: droneAlt });
         const newCount = waypointsRef.current.length;
         setWaypointCount(newCount);
@@ -1626,8 +2076,7 @@ export default function App() {
 
       // ── MISSILE LAUNCH / TARGET (2-click) ──
       if (mode === 'draw-path' && threatMode === 'missile') {
-        const sampled = await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, [cartographic]);
-        const terrainAlt = sampled[0].height;
+        const terrainAlt = await sampleHeight(cartographic);
 
         if (!missileClickRef.current) {
           // First click: launch point
@@ -1674,8 +2123,7 @@ export default function App() {
 
       // ── IMPACT ANALYSIS (2-click: launch → target) ──
       if (mode === 'impact-analysis') {
-        const sampled = await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, [cartographic]);
-        const terrainAlt = sampled[0].height;
+        const terrainAlt = await sampleHeight(cartographic);
 
         if (!impactClickRef.current) {
           // Clear previous impact entities
@@ -1698,10 +2146,32 @@ export default function App() {
 
           const missile = selectedMissile ?? MISSILE_THREATS[0];
 
+          // Collect all sensors (placed + pre-seeded radar network)
+          const allSensors = [
+            ...placedRef.current
+              .filter(e => e._cuasData?.rangeKm > 0)
+              .map(e => e._cuasData),
+            ...radarEntitiesRef.current
+              .filter(e => e._cuasData?.refRcsM2)  // de-dup: only dome entities have refRcsM2
+              .map(e => e._cuasData),
+          ];
+          // Deduplicate by sensor id
+          const sensorMap = new Map(allSensors.map(s => [s.id, s]));
+          const sensorList = [...sensorMap.values()].map(s => ({
+            id: s.id, name: s.name, lat: s.lat, lon: s.lon,
+            elevationM: s.elevationM ?? s.terrainAlt ?? 50,
+            maxRangeKm: s.maxRangeKm ?? s.rangeKm,
+            minAltM: s.minAltM ?? 0,
+            maxAltM: s.maxAltM ?? 100000,
+            refRcsM2: s.refRcsM2 ?? 1.0,
+            nation: s.nation ?? 'UNK',
+            frequencyBand: s.frequencyBand ?? '?',
+          }));
+
           // Call backend impact analysis
           let analysis;
           try {
-            const res = await fetch(`${BACKEND}/analyze-impact`, {
+            const res = await fetch(`${BACKEND}/analyze-impact-v2`, {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 launch_lat: launch.lat, launch_lon: launch.lon, launch_alt: launch.alt,
@@ -1711,6 +2181,9 @@ export default function App() {
                 apogee_km: missile.apogeeKm,
                 warhead_kg: missile.warheadKg ?? 50,
                 warhead_type: missile.type === 'rocket' ? 'he' : 'he',
+                missile_id: missile.id ?? '_default_ballistic',
+                cep_meters: missile.cepMeters ?? 50,
+                sensors: sensorList,
               }),
             });
             analysis = await res.json();
@@ -1802,63 +2275,220 @@ export default function App() {
             impactEntitiesRef.current.push(ring);
           }
 
+          // Draw CEP probability rings (dashed outlines at impact point)
+          if (analysis.cep_rings) {
+            const cepConfigs = [
+              { r: analysis.cep_rings.r99_m, color: '#FF3300', dash: [4, 8] },
+              { r: analysis.cep_rings.r90_m, color: '#FFD700', dash: [6, 6] },
+              { r: analysis.cep_rings.r50_m, color: '#ADFF2F', dash: [8, 4] },
+            ];
+            for (const { r, color } of cepConfigs) {
+              const cepColor = cesiumColorFromHex(color);
+              const cepRing = viewer.entities.add({
+                position: Cesium.Cartesian3.fromDegrees(lon, lat, terrainAlt + 3),
+                ellipse: {
+                  semiMajorAxis: r,
+                  semiMinorAxis: r,
+                  material: new Cesium.ColorMaterialProperty(cepColor.withAlpha(0.0)),
+                  outline: true,
+                  outlineColor: cepColor.withAlpha(0.7),
+                  outlineWidth: 1,
+                  height: terrainAlt + 4,
+                },
+              });
+              impactEntitiesRef.current.push(cepRing);
+            }
+            // Label the 90% ring
+            const r90 = analysis.cep_rings.r90_m;
+            const cepLabel = viewer.entities.add({
+              position: Cesium.Cartesian3.fromDegrees(lon, lat + r90 / 111000, terrainAlt + 5),
+              label: {
+                text: `90% ≤ ${r90 >= 1000 ? (r90/1000).toFixed(1)+'km' : r90+'m'}`,
+                font: '8px monospace',
+                fillColor: cesiumColorFromHex('#FFD700'),
+                outlineColor: Cesium.Color.BLACK, outlineWidth: 2,
+                style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+              },
+            });
+            impactEntitiesRef.current.push(cepLabel);
+          }
+
           setImpactAnalysis(analysis);
           setImpactMissile(missile);
           startImpactAnimation(analysis, missile);
         }
         return;
       }
+
+      // ── PLAN GRAPHICS (multi-click drawing) ──
+      if (mode === 'plan-graphics') {
+        const gt = GRAPHIC_TYPE_MAP[selectedGraphicType];
+        if (!gt) return;
+
+        const terrainAlt = await sampleHeight(cartographic);
+        const point = { lat, lon, alt: terrainAlt };
+
+        graphicPointsRef.current.push(point);
+        const newCount = graphicPointsRef.current.length;
+        setGraphicPointCount(newCount);
+
+        // Preview dot
+        const dotColor = cesiumColorFromHex(graphicColor);
+        const dot = viewer.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(lon, lat, terrainAlt + 10),
+          point: {
+            pixelSize: 6,
+            color: dotColor,
+            outlineColor: Cesium.Color.WHITE,
+            outlineWidth: 1,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        });
+        graphicPreviewRef.current.dots.push(dot);
+
+        // Update preview line
+        if (graphicPreviewRef.current.line) {
+          viewer.entities.remove(graphicPreviewRef.current.line);
+          graphicPreviewRef.current.line = null;
+        }
+        if (newCount >= 2) {
+          const positions = graphicPointsRef.current.map(p =>
+            Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.alt + 8)
+          );
+          const closed = gt.closed && newCount >= 3;
+          graphicPreviewRef.current.line = viewer.entities.add({
+            polyline: {
+              positions: closed ? [...positions, positions[0]] : positions,
+              width: 2,
+              material: new Cesium.PolylineDashMaterialProperty({ color: dotColor, dashLength: 10 }),
+              clampToGround: true,
+            },
+          });
+        }
+
+        // Single-point types finish immediately
+        if (!gt.multiPoint) {
+          finishGraphic();
+        }
+        return;
+      }
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
-  }, [mode, faction, selectedUnit, selectedCUAS, selectedLayerAsset, selectedDrone, selectedMissile, threatMode, refreshWaypointPreview, selectMapItem, startImpactAnimation, stopImpactAnimation]);
+  }, [mode, faction, selectedUnit, selectedCUAS, selectedLayerAsset, selectedDrone, selectedMissile, threatMode, selectedGraphicType, graphicColor, graphicLabel, refreshWaypointPreview, selectMapItem, startImpactAnimation, stopImpactAnimation, finishGraphic]);
 
   // ---- Launch simulation ----
   const handleSimulate = useCallback(async () => {
     const viewer = viewerRef.current;
     if (!viewer || waypointsRef.current.length < 2) return;
 
+    cancelAnimationFrame(simRef.current.raf);
+    simRef.current.entities.forEach(e => viewer.entities.remove(e));
+    simRef.current.raf = null;
+    simRef.current.startWall = null;
+    setSimActive(false);
+    setSimPlaying(false);
+    setSimElapsed(0);
+    setIntercepts([]);
+    setSimSensorEvents([]);
+
     let path;
 
-    if (threatMode === 'uas') {
-      const drone = selectedDrone ?? DRONE_TYPES[0];
-      // Sample terrain
-      const wps = waypointsRef.current;
-      const allCarts = [];
-      for (let seg = 0; seg < wps.length - 1; seg++) {
-        for (let i = 0; i < 20; i++) {
-          const t = i / 20;
-          allCarts.push(Cesium.Cartographic.fromDegrees(
-            wps[seg].lon + (wps[seg + 1].lon - wps[seg].lon) * t,
-            wps[seg].lat + (wps[seg + 1].lat - wps[seg].lat) * t,
-          ));
-        }
-      }
-      allCarts.push(Cesium.Cartographic.fromDegrees(wps[wps.length - 1].lon, wps[wps.length - 1].lat));
-      const sampledAll = await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, allCarts);
-      const terrainHeights = sampledAll.map(p => p.height);
+    try {
+      if (threatMode === 'uas') {
+        const drone = selectedDrone ?? DRONE_TYPES[0];
+        const wps = waypointsRef.current;
 
-      try {
-        const res = await fetch(`${BACKEND}/simulate-path`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ waypoints: wps, speed_ms: drone.speedMs, agl_meters: drone.aglMeters, terrain_heights: terrainHeights }),
-        });
-        path = await res.json();
-      } catch {
-        path = buildClientUASPath(wps, drone.speedMs, drone.aglMeters);
+        // Sample terrain — wrapped so a missing/unready terrain provider never kills the sim
+        const allCarts = [];
+        for (let seg = 0; seg < wps.length - 1; seg++) {
+          for (let i = 0; i < 20; i++) {
+            const t = i / 20;
+            allCarts.push(Cesium.Cartographic.fromDegrees(
+              wps[seg].lon + (wps[seg + 1].lon - wps[seg].lon) * t,
+              wps[seg].lat + (wps[seg + 1].lat - wps[seg].lat) * t,
+            ));
+          }
+        }
+        allCarts.push(Cesium.Cartographic.fromDegrees(wps[wps.length - 1].lon, wps[wps.length - 1].lat));
+
+        let terrainHeights;
+        try {
+          const sampledAll = await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, allCarts);
+          terrainHeights = sampledAll.map(p => p.height ?? 0);
+        } catch {
+          // Terrain provider not ready or no availability — use 0 (MSL), AGL offset still applied by backend
+          terrainHeights = allCarts.map(() => 0);
+        }
+
+        try {
+          const res = await fetch(`${BACKEND}/simulate-path`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ waypoints: wps, speed_ms: drone.speedMs, agl_meters: drone.aglMeters, terrain_heights: terrainHeights }),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          path = await res.json();
+        } catch {
+          path = buildClientUASPath(wps, drone.speedMs);
+        }
+
+        // Guard: ensure path is a non-empty array
+        if (!Array.isArray(path) || path.length < 2) {
+          path = buildClientUASPath(wps, drone.speedMs);
+        }
+        path = ensureTimedPath(path, drone.speedMs);
+
+      } else {
+        // Missile: physics-accurate trajectory via ICAO+RK4
+        const missile = selectedMissile ?? MISSILE_THREATS[0];
+        const launch = waypointsRef.current[0];
+        const target = waypointsRef.current[1];
+        const missileSpeedMs = (missile.speedMach ?? 3.0) * 343;
+        try {
+          const res = await fetch(`${BACKEND}/physics-trajectory`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              launch_lat: launch.lat, launch_lon: launch.lon, launch_alt: launch.alt ?? 0,
+              target_lat: target.lat, target_lon: target.lon, target_alt: target.alt ?? 0,
+              missile_id: missile.id ?? '_default_ballistic',
+              trajectory_type: missile.type ?? 'ballistic',
+              speed_mach: missile.speedMach ?? 3.0,
+              apogee_km: missile.apogeeKm ?? 20.0,
+              warhead_kg: missile.warheadKg ?? 100.0,
+              cep_meters: missile.cepMeters ?? 50.0,
+            }),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const phys = await res.json();
+          path = phys.trajectory_path ?? [];
+        } catch {
+          path = await fetchMissilePath(missile, launch, target);
+        }
+
+        if (!Array.isArray(path) || path.length < 2) {
+          path = buildClientBallisticPath(
+            waypointsRef.current[0], waypointsRef.current[1],
+            (selectedMissile?.apogeeKm ?? 20), (selectedMissile?.speedMach ?? 3),
+          );
+        }
+        path = ensureTimedPath(path, missileSpeedMs);
       }
-    } else {
-      // Missile: two-point arc
-      const missile = selectedMissile ?? MISSILE_THREATS[0];
-      const launch = waypointsRef.current[0];
-      const target = waypointsRef.current[1];
-      path = await fetchMissilePath(missile, launch, target);
+    } catch (err) {
+      console.error('handleSimulate failed:', err);
+      return;
     }
 
-    // Collect C-UAS systems on map
-    const cuasList = [...new Map(
+    // Collect sensors: placed C-UAS + pre-seeded radar network
+    const placedSensors = [...new Map(
       placedRef.current
         .filter(e => e._cuasData && e._cuasData.rangeKm > 0)
         .map(e => [`${e._cuasData.id}-${e._cuasData.lat}-${e._cuasData.lon}`, e._cuasData])
     ).values()];
+    const radarSensors = [...new Map(
+      radarEntitiesRef.current
+        .filter(e => e._cuasData?.refRcsM2)
+        .map(e => [e._cuasData.id, e._cuasData])
+    ).values()];
+    const cuasList = [...placedSensors, ...radarSensors];
 
     // Create threat dot entity/entities
     const threat = threatMode === 'uas' ? selectedDrone : selectedMissile;
@@ -1925,26 +2555,79 @@ export default function App() {
       droneEntities.push(ent);
     }
 
+    // Map computeSensorEvents format → RadarAlertFeed format
+    const mappedSensorEvents = (intel?.events ?? []).map((e, idx, arr) => {
+      const sensor = cuasList.find(s => s.id === e.sensor_id);
+      return {
+        ...e,
+        time_s:     e.entry_time_s,
+        nation:     sensor?.nation ?? '?',
+        freq_band:  sensor?.frequencyBand ?? '?',
+        range_km:   e.closest_km,
+        p_detect:   e.confidence,
+        cue_alerts: (e.downstream_sensors ?? []).map(ds => ({
+          sensor_name: ds.sensor_name,
+          sensor_id:   ds.sensor_id ?? ds.sensor_name,
+          eta_s:       ds.eta_s,
+        })),
+        cued_by: idx > 0 ? arr[0].sensor_id : null,
+      };
+    });
+
     simRef.current = {
       path,
       paths: simPaths,
       entities: droneEntities,
       cuasList,
-      sensorEvents: intel?.events ?? [],
+      sensorEvents: mappedSensorEvents,
       threat,
       threatMode,
       env: planningEnv,
       alertedIds: new Set(),
       lastFusionUpdate: 0,
-      startWall: null,
+      startWall: performance.now(),
       speed: simSpeed,
       raf: null,
     };
     setSimActive(true);
-    setSimPlaying(false);
+    setSimPlaying(true);
     setSimElapsed(0);
     setIntercepts([]);
+    setSimSensorEvents(mappedSensorEvents);
     setThreatIntel(intel);
+
+    // Kick off the animation loop immediately — no separate PLAY click needed
+    const animPaths = simPaths;
+    const tick = () => {
+      if (!simRef.current.startWall) return;
+      const elapsed = ((performance.now() - simRef.current.startWall) / 1000) * simRef.current.speed;
+      setSimElapsed(elapsed);
+      const endTime = Math.max(...animPaths.map(p => p[p.length - 1]?.time_s ?? 0), 0);
+      if (endTime > 0 && elapsed >= endTime) {
+        setSimPlaying(false);
+        simRef.current.startWall = null;
+        return;
+      }
+      simRef.current.entities.forEach((ent, i) => {
+        const pt = pathPointAtTime(animPaths[i] ?? animPaths[0], elapsed);
+        if (!pt) return;
+        ent.position = Cesium.Cartesian3.fromDegrees(pt.lon, pt.lat, pt.alt);
+        simRef.current.sensorEvents
+          .filter(ev => ev.trackIndex === i && ev.time_s <= elapsed)
+          .forEach(ev => {
+            if (simRef.current.alertedIds.has(ev.id)) return;
+            simRef.current.alertedIds.add(ev.id);
+            setIntercepts(prev => [...prev, {
+              time_s: ev.time_s, cuas_id: ev.sensor_id, cuas_name: ev.sensor_name,
+              sensor_type: ev.sensor_type, lat: ev.lat, lon: ev.lon, alt: ev.alt,
+              time_to_impact_s: ev.time_to_impact_s, closest_km: ev.closest_km,
+              confidence: ev.confidence, downstream_sensors: ev.downstream_sensors,
+            }]);
+          });
+      });
+      simRef.current.raf = requestAnimationFrame(tick);
+    };
+    simRef.current.raf = requestAnimationFrame(tick);
   }, [threatMode, selectedDrone, selectedMissile, simSpeed, planningEnv]);
 
   // ---- Play / Pause ----
@@ -1979,21 +2662,21 @@ export default function App() {
           ent.position = Cesium.Cartesian3.fromDegrees(point.lon, point.lat, point.alt);
 
           simRef.current.sensorEvents
-            .filter(event => event.trackIndex === i && event.entry_time_s <= elapsed)
+            .filter(event => event.trackIndex === i && event.time_s <= elapsed)
             .forEach(event => {
               if (simRef.current.alertedIds.has(event.id)) return;
               simRef.current.alertedIds.add(event.id);
               setIntercepts(prev => [...prev, {
-                time_s: event.entry_time_s,
-                cuas_id: event.sensor_id,
-                cuas_name: event.sensor_name,
-                sensor_type: event.sensor_type,
-                lat: event.lat,
-                lon: event.lon,
-                alt: event.alt,
+                time_s:           event.time_s,
+                cuas_id:          event.sensor_id,
+                cuas_name:        event.sensor_name,
+                sensor_type:      event.sensor_type,
+                lat:              event.lat,
+                lon:              event.lon,
+                alt:              event.alt,
                 time_to_impact_s: event.time_to_impact_s,
-                closest_km: event.closest_km,
-                confidence: event.confidence,
+                closest_km:       event.closest_km,
+                confidence:       event.confidence,
                 downstream_sensors: event.downstream_sensors,
               }]);
             });
@@ -2037,6 +2720,42 @@ export default function App() {
     setSimElapsed(0);
     setIntercepts([]);
     setThreatIntel(null);
+    setSimSensorEvents([]);
+  }, []);
+
+  // ── KMZ / KML import ──────────────────────────────────────────────────────
+
+  const loadKmzFile = useCallback(async (file) => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    try {
+      const dataSource = await Cesium.KmlDataSource.load(file, {
+        camera: viewer.scene.camera,
+        canvas: viewer.scene.canvas,
+        clampToGround: true,
+      });
+      const id = `kmz-${Date.now()}`;
+      await viewer.dataSources.add(dataSource);
+      kmzSourcesRef.current[id] = dataSource;
+      setKmzLayers(prev => [...prev, { id, name: file.name, visible: true }]);
+      viewer.flyTo(dataSource).catch(() => {});
+    } catch (err) {
+      console.error('KMZ load failed:', err);
+    }
+  }, []);
+
+  const removeKmzLayer = useCallback((id) => {
+    const viewer = viewerRef.current;
+    const ds = kmzSourcesRef.current[id];
+    if (viewer && ds) viewer.dataSources.remove(ds, true);
+    delete kmzSourcesRef.current[id];
+    setKmzLayers(prev => prev.filter(l => l.id !== id));
+  }, []);
+
+  const toggleKmzLayerVisibility = useCallback((id) => {
+    const ds = kmzSourcesRef.current[id];
+    if (ds) ds.show = !ds.show;
+    setKmzLayers(prev => prev.map(l => l.id === id ? { ...l, visible: !l.visible } : l));
   }, []);
 
   const handleClearAll = useCallback(() => {
@@ -2067,6 +2786,14 @@ export default function App() {
     setSelectedMapItem(null);
     setWaypointCount(0);
     firstPointRef.current = null;
+    // Planning graphics
+    graphicPreviewRef.current.dots.forEach(e => viewer.entities.remove(e));
+    if (graphicPreviewRef.current.line) viewer.entities.remove(graphicPreviewRef.current.line);
+    graphicPreviewRef.current = { dots: [], line: null };
+    markupEntitiesRef.current.forEach(e => viewer.entities.remove(e));
+    markupEntitiesRef.current = [];
+    graphicPointsRef.current = [];
+    setGraphicPointCount(0);
   }, [handleStop, stopImpactAnimation]);
 
   useEffect(() => { simRef.current.speed = simSpeed; }, [simSpeed]);
@@ -2090,6 +2817,25 @@ export default function App() {
         waypointCount={waypointCount}
         onSimulate={handleSimulate}
         onClearAll={handleClearAll}
+        radarNetworkVisible={radarNetworkVisible}
+        onToggleRadarNetwork={() => setRadarNetworkVisible(v => !v)}
+        dataLinkConnected={dataLinkConnected}
+        dataLinkTrackCount={Object.keys(externalTracks).length}
+        dataLinkVisible={dataLinkVisible}
+        onToggleDataLink={() => setDataLinkVisible(v => !v)}
+        kmzLayers={kmzLayers}
+        onImportKmz={loadKmzFile}
+        onRemoveKmzLayer={removeKmzLayer}
+        onToggleKmzLayer={toggleKmzLayerVisibility}
+        selectedGraphicType={selectedGraphicType}
+        setSelectedGraphicType={setSelectedGraphicType}
+        graphicLabel={graphicLabel}
+        setGraphicLabel={setGraphicLabel}
+        graphicColor={graphicColor}
+        setGraphicColor={setGraphicColor}
+        graphicPointCount={graphicPointCount}
+        onFinishGraphic={finishGraphic}
+        onUndoGraphicPoint={undoLastGraphicPoint}
       />
       {selectedMapItem && (
         <div style={{
@@ -2149,6 +2895,18 @@ export default function App() {
           impactClickRef.current = null;
         }}
       />
+      <RadarAlertFeed
+        events={simSensorEvents}
+        simElapsed={simElapsed}
+        visible={simActive && simSensorEvents.length > 0}
+      />
+      {dataLinkVisible && (
+        <DataLinkPanel
+          connected={dataLinkConnected}
+          tracks={Object.values(externalTracks)}
+          connectionUrl={WS_TRACKS_URL}
+        />
+      )}
       {mode === 'los' && (
         <LOSResultPanel
           analysis={losAnalysis}

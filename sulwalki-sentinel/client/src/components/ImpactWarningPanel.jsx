@@ -14,6 +14,15 @@ function fmt(seconds) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+function Row({ label, value, valueColor = '#AABBCC' }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+      <span style={{ color: '#445566', fontSize: 8, fontFamily: 'monospace' }}>{label}</span>
+      <span style={{ color: valueColor, fontSize: 9, fontFamily: 'monospace', fontWeight: 'bold' }}>{value}</span>
+    </div>
+  );
+}
+
 function WarningBadge({ level, color }) {
   return (
     <div style={{
@@ -240,6 +249,77 @@ export default function ImpactWarningPanel({ analysis, missile, onClose }) {
             </div>
           ))}
         </div>
+
+        {/* CEP Probability Rings */}
+        {analysis.cep_rings && (
+          <div style={{ marginBottom: 10, padding: '6px 8px', background: '#050D18', border: '1px solid #0D1E2E' }}>
+            <div style={{ color: '#334455', fontSize: 9, letterSpacing: '0.1em', marginBottom: 5 }}>
+              IMPACT PROBABILITY RINGS (Rayleigh)
+            </div>
+            {[
+              { label: '50% (CEP)', r: analysis.cep_rings.r50_m, color: '#ADFF2F' },
+              { label: '90%',       r: analysis.cep_rings.r90_m, color: '#FFD700' },
+              { label: '95%',       r: analysis.cep_rings.r95_m, color: '#FF8800' },
+              { label: '99%',       r: analysis.cep_rings.r99_m, color: '#FF3300' },
+            ].map(({ label, r, color }) => (
+              <div key={label} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                <span style={{ color: '#445566', fontSize: 8, fontFamily: 'monospace' }}>{label}</span>
+                <span style={{ color, fontSize: 9, fontFamily: 'monospace', fontWeight: 'bold' }}>
+                  {r >= 1000 ? `${(r/1000).toFixed(2)} km` : `${r} m`}
+                </span>
+              </div>
+            ))}
+            <div style={{ color: '#223344', fontSize: 8, marginTop: 3 }}>
+              σ = {analysis.cep_rings.sigma_m} m
+              {analysis.physics_model && (
+                <span style={{ marginLeft: 8, color: '#1A3A4A' }}>[{analysis.physics_model}]</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Impact Energy */}
+        {analysis.impact_energy && (
+          <div style={{ marginBottom: 10, padding: '6px 8px', background: '#050D18', border: '1px solid #0D1E2E' }}>
+            <div style={{ color: '#334455', fontSize: 9, letterSpacing: '0.1em', marginBottom: 5 }}>
+              TERMINAL ENERGY
+            </div>
+            <Row label="Impact speed"  value={`${analysis.impact_energy.impact_speed_ms} m/s`}  valueColor="#FF6600" />
+            <Row label="Impact Mach"   value={`M ${analysis.impact_energy.impact_mach}`}          valueColor="#FF6600" />
+            <Row label="Kinetic energy" value={`${analysis.impact_energy.ke_mj} MJ`}             valueColor="#FF8800" />
+            <Row label="Warhead (chem)" value={`${analysis.impact_energy.chem_mj} MJ`}           valueColor="#FFAA00" />
+            <Row label="Total energy"  value={`${analysis.impact_energy.total_energy_mj} MJ`}    valueColor="#FF4400" />
+          </div>
+        )}
+
+        {/* Radar Detections (from /analyze-impact-v2) */}
+        {analysis.radar_detections?.length > 0 && (
+          <div style={{ marginBottom: 10, padding: '6px 8px', background: '#050D18', border: '1px solid #0D1E2E' }}>
+            <div style={{ color: '#334455', fontSize: 9, letterSpacing: '0.1em', marginBottom: 5 }}>
+              RADAR DETECTION TIMELINE
+            </div>
+            {analysis.radar_detections.map((d, i) => (
+              <div key={d.sensor_id + i} style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                marginBottom: 3, opacity: 1,
+              }}>
+                <div>
+                  <span style={{ color: d.nation === 'Russia' ? '#FF3300' : '#00BFFF', fontSize: 8, fontFamily: 'monospace' }}>
+                    {i === 0 ? '◆' : '◇'} {d.sensor_name}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <span style={{ color: '#556677', fontSize: 8, fontFamily: 'monospace' }}>
+                    T+{Math.round(d.time_s)}s
+                  </span>
+                  <span style={{ color: '#445566', fontSize: 8, fontFamily: 'monospace' }}>
+                    {Math.round(d.time_to_impact_s)}s TTI
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Warhead info */}
         {missile && (

@@ -1005,6 +1005,10 @@ function markDraggable(entity, options = {}) {
   entity._dragDisplayOffsetM = options.displayOffsetM ?? 0;
   entity._waypointAltitudeOffsetM = options.waypointAltitudeOffsetM ?? 0;
   entity._deleteLabel = options.label ?? options.kind ?? 'map item';
+  if (options.graphicOffsets) {
+    entity._graphicGeometry = options.graphicGeometry ?? 'point';
+    entity._graphicOffsets = options.graphicOffsets;
+  }
   return entity;
 }
 
@@ -1015,12 +1019,51 @@ function setEntityLabelText(entity, text) {
 }
 
 function updateEntityMapPosition(entity, lat, lon, alt, cartesian) {
+  if (entity._graphicOffsets?.length) {
+    const positions = entity._graphicOffsets.map(offset =>
+      Cesium.Cartesian3.fromDegrees(lon + offset.dLon, lat + offset.dLat, alt + offset.dAlt)
+    );
+    if (entity.polyline) {
+      entity.polyline.positions = positions;
+    } else if (entity.polygon) {
+      entity.polygon.hierarchy = new Cesium.PolygonHierarchy(positions);
+    } else {
+      entity.position = positions[0];
+    }
+    return;
+  }
+
   const nextPosition = cartesian ?? Cesium.Cartesian3.fromDegrees(lon, lat, alt);
   entity.position = nextPosition;
 
   if (entity._cuasData) {
     entity._cuasData = { ...entity._cuasData, lat, lon, terrainAlt: alt };
   }
+}
+
+function makeGraphicAnchor(points) {
+  return points.reduce((acc, point) => ({
+    lat: acc.lat + point.lat / points.length,
+    lon: acc.lon + point.lon / points.length,
+    alt: acc.alt + point.alt / points.length,
+  }), { lat: 0, lon: 0, alt: 0 });
+}
+
+function makeGraphicOffsets(points, anchor) {
+  return points.map(point => ({
+    dLat: point.lat - anchor.lat,
+    dLon: point.lon - anchor.lon,
+    dAlt: point.alt - anchor.alt,
+  }));
+}
+
+function cartesianToGraphicPoint(cartesian) {
+  const cartographic = Cesium.Cartographic.fromCartesian(cartesian);
+  return {
+    lat: Cesium.Math.toDegrees(cartographic.latitude),
+    lon: Cesium.Math.toDegrees(cartographic.longitude),
+    alt: cartographic.height ?? 0,
+  };
 }
 
 function LOSResultPanel({ analysis, pending, awaitingTarget }) {
@@ -1443,9 +1486,11 @@ export default function App() {
     const color = cesiumColorFromHex(graphicColor);
     const label = graphicLabel.trim() || gt.shortLabel;
     const group = makeDragGroup('graphic');
+    const displayPoints = points.map(p => ({ lat: p.lat, lon: p.lon, alt: p.alt + 8 }));
+    const graphicAnchor = makeGraphicAnchor(displayPoints);
 
-    const positions = points.map(p =>
-      Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.alt + 8)
+    const positions = displayPoints.map(p =>
+      Cesium.Cartesian3.fromDegrees(p.lon, p.lat, p.alt)
     );
 
     // Closed shapes (NAI, OBJ)
@@ -1459,7 +1504,13 @@ export default function App() {
         },
       });
       markupEntitiesRef.current.push(
-        markDraggable(poly, { kind: 'graphic', group, label, draggable: false })
+        markDraggable(poly, {
+          kind: 'graphic',
+          group,
+          label,
+          graphicGeometry: 'polygon',
+          graphicOffsets: makeGraphicOffsets(displayPoints, graphicAnchor),
+        })
       );
     }
 
@@ -1477,6 +1528,9 @@ export default function App() {
       const linePositions = gt.closed
         ? [...positions, positions[0]]  // close the polygon outline
         : positions;
+      const linePoints = gt.closed
+        ? [...displayPoints, displayPoints[0]]
+        : displayPoints;
 
       const line = viewer.entities.add({
         polyline: {
@@ -1487,12 +1541,19 @@ export default function App() {
         },
       });
       markupEntitiesRef.current.push(
-        markDraggable(line, { kind: 'graphic', group, label, draggable: false })
+        markDraggable(line, {
+          kind: 'graphic',
+          group,
+          label,
+          graphicGeometry: 'polyline',
+          graphicOffsets: makeGraphicOffsets(linePoints, graphicAnchor),
+        })
       );
     }
 
     // Labels
     const addLabel = (pos, text, offset = new Cesium.Cartesian2(0, -18)) => {
+      const labelPoint = cartesianToGraphicPoint(pos);
       const e = viewer.entities.add({
         position: pos,
         label: {
@@ -1507,7 +1568,13 @@ export default function App() {
         },
       });
       markupEntitiesRef.current.push(
-        markDraggable(e, { kind: 'graphic', group, label: text, draggable: false })
+        markDraggable(e, {
+          kind: 'graphic',
+          group,
+          label: text,
+          graphicGeometry: 'point',
+          graphicOffsets: makeGraphicOffsets([labelPoint], graphicAnchor),
+        })
       );
     };
 
@@ -1535,7 +1602,13 @@ export default function App() {
         },
       });
       markupEntitiesRef.current.push(
-        markDraggable(dot, { kind: 'graphic', group, label, draggable: false })
+        markDraggable(dot, {
+          kind: 'graphic',
+          group,
+          label,
+          graphicGeometry: 'point',
+          graphicOffsets: makeGraphicOffsets([{ lat: points[0].lat, lon: points[0].lon, alt: points[0].alt + 12 }], graphicAnchor),
+        })
       );
     } else if (!gt.closed) {
       // Midpoint label for all open line graphics

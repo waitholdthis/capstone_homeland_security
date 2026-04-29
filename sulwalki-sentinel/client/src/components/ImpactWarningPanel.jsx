@@ -227,6 +227,24 @@ export default function ImpactWarningPanel({ analysis, missile, onClose }) {
           })}
         </div>
 
+        {analysis.protection_guidance?.length > 0 && (
+          <div style={{ marginBottom: 10, padding: '6px 8px', background: '#090F16', border: '1px solid #223344' }}>
+            <div style={{ color: '#334455', fontSize: 9, letterSpacing: '0.1em', marginBottom: 5 }}>
+              PROTECTIVE ACTIONS
+            </div>
+            {analysis.protection_guidance.map((item, index) => (
+              <div key={item} style={{
+                color: index === 0 ? dynColor : '#AABBCC',
+                fontSize: 9,
+                lineHeight: 1.35,
+                marginBottom: 4,
+              }}>
+                {index + 1}. {item}
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Blast zones */}
         <div style={{ marginBottom: 6 }}>
           <div style={{ color: '#334455', fontSize: 9, letterSpacing: '0.1em', marginBottom: 5 }}>
@@ -324,9 +342,9 @@ export default function ImpactWarningPanel({ analysis, missile, onClose }) {
         {/* Warhead info */}
         {missile && (
           <div style={{ fontSize: 9, color: '#334455', borderTop: '1px solid #0D1E2E', paddingTop: 6 }}>
-            Warhead: <span style={{ color: '#556677' }}>{missile.warheadKg || missile.warhead?.split(';')[0]} kg</span>
+            Warhead: <span style={{ color: '#556677' }}>{missile.warheadKg ? `${missile.warheadKg} kg` : (missile.warhead?.split(';')[0] ?? 'estimated')}</span>
             &nbsp;·&nbsp;
-            Speed: <span style={{ color: '#556677' }}>Mach {missile.speedMach}</span>
+            Speed: <span style={{ color: '#556677' }}>{missile.speedMach ? `Mach ${missile.speedMach}` : `${missile.speedMs ?? '—'} m/s`}</span>
             &nbsp;·&nbsp;
             CEP: <span style={{ color: '#556677' }}>{missile.cepMeters || '—'} m</span>
           </div>

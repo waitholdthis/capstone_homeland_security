@@ -211,6 +211,91 @@ function resampleTimedPath(path, maxPoints = 240) {
   }).filter(Boolean);
 }
 
+function routeDistanceKm(path) {
+  if (!Array.isArray(path) || path.length < 2) return 0;
+  let distance = 0;
+  for (let i = 1; i < path.length; i++) {
+    distance += geodesicDistanceKm(path[i - 1].lat, path[i - 1].lon, path[i].lat, path[i].lon);
+  }
+  return distance;
+}
+
+function classifyImpactWarning(seconds) {
+  if (seconds <= 0) return { level: 'IMPACT', color: '#CC0000' };
+  if (seconds <= 5) return { level: 'TAKE COVER NOW', color: '#FF0000' };
+  if (seconds <= 20) return { level: 'RUN TO COVER', color: '#FF4400' };
+  if (seconds <= 35) return { level: 'MOVE TO SHELTER', color: '#FF8800' };
+  if (seconds <= 120) return { level: 'PREPARE TO SHELTER', color: '#FFAA00' };
+  return { level: 'MONITOR', color: '#ADFF2F' };
+}
+
+function estimateWarheadKg(threat, threatMode) {
+  if (threatMode === 'missile') return Math.max(threat?.warheadKg ?? 50, 0.1);
+  const text = `${threat?.category ?? ''} ${threat?.warhead ?? ''}`.toLowerCase();
+  if (text.includes('none')) return 0.1;
+  if (text.includes('grenade') || text.includes('vog')) return 0.7;
+  if (text.includes('shaped') || text.includes('rpg')) return 2.5;
+  if (text.includes('loitering') || text.includes('kamikaze')) return Math.max(1, Math.min((threat?.weightKg ?? 8) * 0.35, 15));
+  if (text.includes('armed') || text.includes('munition')) return Math.max(2, Math.min((threat?.weightKg ?? 20) * 0.25, 25));
+  return Math.max(0.2, Math.min((threat?.weightKg ?? 2) * 0.15, 5));
+}
+
+function buildProtectionAssessment(path, threat, threatMode) {
+  const flightTime = path[path.length - 1]?.time_s ?? 0;
+  const distanceKm = routeDistanceKm(path);
+  const warheadKg = estimateWarheadKg(threat, threatMode);
+  const cbrt = Math.cbrt(Math.max(warheadKg, 0.1));
+  const warning = classifyImpactWarning(flightTime);
+  const speedMs = distanceKm > 0 && flightTime > 0 ? (distanceKm * 1000) / flightTime : 0;
+  const impactPoint = path[path.length - 1] ?? {};
+
+  return {
+    flight_time_s: Number(flightTime.toFixed(1)),
+    dist_km: Number(distanceKm.toFixed(2)),
+    trajectory_path: path,
+    target_lat: impactPoint.lat,
+    target_lon: impactPoint.lon,
+    impact_time_s: flightTime,
+    confidence: threatMode === 'missile' ? 0.72 : 0.55,
+    uncertainty_m: threatMode === 'missile' ? (threat?.cepMeters ?? 100) : Math.max(30, (threat?.group ?? 1) * 45),
+    sensor_count: 0,
+    warning_level: warning.level,
+    warning_color: warning.color,
+    blast_radii: {
+      lethal_m: Math.round(15 * cbrt),
+      severe_m: Math.round(35 * cbrt),
+      moderate_m: Math.round(70 * cbrt),
+      light_m: Math.round(150 * cbrt),
+    },
+    shelter_windows: {
+      react_deadline_s: Number((flightTime - 5).toFixed(1)),
+      cover_deadline_s: Number((flightTime - 20).toFixed(1)),
+      shelter_deadline_s: Number((flightTime - 35).toFixed(1)),
+    },
+    protection_guidance: [
+      flightTime > 35
+        ? 'Move personnel to hardened overhead cover or below-grade shelter now.'
+        : 'Do not spend time relocating far; use the nearest hard cover immediately.',
+      flightTime > 20
+        ? 'Disperse exposed personnel, get below rooflines, and avoid windows, fuel, and ammunition stacks.'
+        : 'Drop behind the nearest substantial barrier, vehicle engine block, wall, berm, or trench edge.',
+      flightTime > 5
+        ? 'Leaders should issue a short countdown and confirm prone/covered posture before impact.'
+        : 'Immediate prone posture: face down, helmet on, mouth open, protect head and neck.',
+      threatMode === 'uas'
+        ? 'For UAS threats, prioritize overhead concealment, thermal/signature reduction, and dispersion.'
+        : 'For missile/rocket threats, prioritize blast fragmentation cover and avoid secondary hazards.',
+    ],
+    impact_energy: {
+      impact_speed_ms: Number(speedMs.toFixed(1)),
+      impact_mach: Number((speedMs / 343).toFixed(2)),
+      chem_mj: Number((warheadKg * 4.184).toFixed(1)),
+      total_energy_mj: Number((warheadKg * 4.184).toFixed(1)),
+    },
+    physics_model: 'client launch estimate',
+  };
+}
+
 function radarHorizonKm(sensorHeightM, targetAltM) {
   const sensorTerm = Math.sqrt(Math.max(sensorHeightM, 0));
   const targetTerm = Math.sqrt(Math.max(targetAltM, 0));
@@ -2434,6 +2519,7 @@ export default function App() {
     const simPaths = threatMode === 'uas'
       ? Array.from({ length: count }, (_, i) => makeErraticUASPath(path, selectedDrone, i))
       : [path];
+    const protectionAssessment = buildProtectionAssessment(path, threat, threatMode);
     // Draw glowing trail showing flight path
     if (Array.isArray(trailRef.current)) {
       trailRef.current.forEach(e => viewer.entities.remove(e));
@@ -2494,7 +2580,9 @@ export default function App() {
     setSimElapsed(0);
     setIntercepts([]);
     setSimSensorEvents([]);
-    setThreatIntel(null);
+    setThreatIntel(protectionAssessment);
+    setImpactAnalysis(protectionAssessment);
+    setImpactMissile(threat);
     viewer.flyTo([...droneEntities, ...trailRef.current], { duration: 0.75 }).catch(() => {});
     viewer.scene.requestRender();
 
@@ -2591,7 +2679,13 @@ export default function App() {
 
         simRef.current.sensorEvents = mappedSensorEvents;
         setSimSensorEvents(mappedSensorEvents);
-        setThreatIntel(intel);
+        setThreatIntel({
+          ...protectionAssessment,
+          ...intel,
+          protection_guidance: protectionAssessment.protection_guidance,
+          shelter_windows: protectionAssessment.shelter_windows,
+          blast_radii: protectionAssessment.blast_radii,
+        });
       } catch (err) {
         console.error('simulation intelligence failed:', err);
       }
@@ -2690,6 +2784,8 @@ export default function App() {
     setIntercepts([]);
     setThreatIntel(null);
     setSimSensorEvents([]);
+    setImpactAnalysis(null);
+    setImpactMissile(null);
   }, []);
 
   // ── KMZ / KML import ──────────────────────────────────────────────────────

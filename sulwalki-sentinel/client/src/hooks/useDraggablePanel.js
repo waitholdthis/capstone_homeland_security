@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 
 const INTERACTIVE_SELECTOR = 'button, input, select, textarea, a, [role="button"]';
 
 export function useDraggablePanel({ position, onPositionChange, panelRef, margin = 8 }) {
   const dragRef = useRef(null);
-  const latestPositionRef = useRef(position);
+  const safePosition = useMemo(() => position ?? { x: margin, y: margin }, [position, margin]);
+  const latestPositionRef = useRef(safePosition);
 
   useEffect(() => {
-    latestPositionRef.current = position;
-  }, [position]);
+    latestPositionRef.current = safePosition;
+  }, [safePosition]);
 
   const clampPosition = useCallback((x, y) => {
     const width = panelRef.current?.offsetWidth ?? 320;
@@ -47,7 +48,7 @@ export function useDraggablePanel({ position, onPositionChange, panelRef, margin
         drag.panelX + event.clientX - drag.startX,
         drag.panelY + event.clientY - drag.startY
       );
-      onPositionChange(next);
+      onPositionChange?.(next);
     };
 
     const handlePointerUp = (event) => {
@@ -73,8 +74,8 @@ export function useDraggablePanel({ position, onPositionChange, panelRef, margin
   return {
     onPointerDown,
     style: {
-      left: position.x,
-      top: position.y,
+      left: safePosition.x,
+      top: safePosition.y,
     },
   };
 }

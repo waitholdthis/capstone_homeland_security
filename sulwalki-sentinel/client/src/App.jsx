@@ -3193,7 +3193,7 @@ export default function App() {
       <RadarAlertFeed
         events={simSensorEvents}
         simElapsed={simElapsed}
-        visible={simActive && simSensorEvents.length > 0}
+        visible={simActive}
         position={radarFeedPosition}
         onPositionChange={setRadarFeedPosition}
       />

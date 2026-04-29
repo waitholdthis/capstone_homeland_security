@@ -156,8 +156,6 @@ export default function RadarAlertFeed({ events = [], simElapsed = 0, visible = 
   const detailed = triggered.slice(-3);
   const summary  = triggered.slice(0, Math.max(triggered.length - 3, 0));
 
-  if (events.length === 0) return null;
-
   return (
     <div style={{
       position: 'absolute',
@@ -256,6 +254,12 @@ export default function RadarAlertFeed({ events = [], simElapsed = 0, visible = 
                 </span>
               </div>
             ))}
+          </div>
+        )}
+
+        {events.length === 0 && (
+          <div style={{ color: '#334455', fontSize: 9, fontFamily: 'monospace', textAlign: 'center', padding: 12 }}>
+            Simulation active. Building projected radar path...
           </div>
         )}
 

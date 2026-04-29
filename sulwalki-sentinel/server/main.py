@@ -286,6 +286,7 @@ def _format_report(doc: dict[str, Any]) -> str:
     impact = state.get("impact_analysis") or {}
     simulation = state.get("simulation") or {}
     threat = state.get("selected_threat") or {}
+    kill_chain = state.get("kill_chain_status") or {}
     gap = _gap_assessment(state)
     lines = [
         "# MDPT SCENARIO REPORT",
@@ -354,7 +355,22 @@ def _format_report(doc: dict[str, Any]) -> str:
     else:
         lines.append("- No impact analysis saved. Run impact analysis to populate flight time, blast effects, radar timeline, and shelter windows.")
 
-    lines.extend(["", "## 7. GAP ANALYSIS", ""])
+    lines.extend(["", "## 7. DEFENSIVE KILL CHAIN CHECKLIST", ""])
+    if kill_chain:
+        for chain_name, steps in kill_chain.items():
+            if not isinstance(steps, dict):
+                continue
+            complete = sum(1 for value in steps.values() if value)
+            total = len(steps)
+            pct = round((complete / total) * 100) if total else 0
+            lines.append(f"- {chain_name.upper()}: {complete}/{total} complete ({pct}%)")
+            open_steps = [step for step, value in steps.items() if not value]
+            if open_steps:
+                lines.append(f"  Open items: {', '.join(open_steps)}")
+    else:
+        lines.append("- No checklist status saved.")
+
+    lines.extend(["", "## 8. GAP ANALYSIS", ""])
     for finding in gap["findings"]:
         lines.append(f"- {finding}")
 
@@ -363,13 +379,13 @@ def _format_report(doc: dict[str, Any]) -> str:
         for item in gap["blind_gaps"]:
             lines.append(f"- {item.get('start_s')}s to {item.get('end_s')}s | duration={item.get('duration_s')}s | segment={item.get('segment', 'n/a')}")
 
-    lines.extend(["", "## 8. RECOMMENDED ACTIONS", ""])
+    lines.extend(["", "## 9. RECOMMENDED ACTIONS", ""])
     for idx, rec in enumerate(gap["recommendations"], start=1):
         lines.append(f"{idx}. {rec}")
 
     lines.extend([
         "",
-        "## 9. COMMANDER / PLANNER NOTES",
+        "## 10. COMMANDER / PLANNER NOTES",
         "",
         "- Treat all automated calculations as planning estimates until validated against authoritative system performance data, terrain products, weather, ROE, and current intelligence.",
         "- Re-run this scenario after any sensor relocation, threat change, weather degradation, or asset outage.",

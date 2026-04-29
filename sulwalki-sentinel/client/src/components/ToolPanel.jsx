@@ -11,6 +11,7 @@ import {
   GRAPHIC_TYPES, PHASE_LINE_NAMES, GRAPHIC_COLOR_PRESETS,
 } from '../data/planningGraphics';
 import { EXERCISE_BOUNDARIES } from '../data/exerciseBoundaries';
+import { KILL_CHAIN_CHECKLISTS } from '../data/killChainChecklists';
 
 const BTN = ({ active, onClick, children }) => (
   <button
@@ -394,6 +395,9 @@ export default function ToolPanel({
   onLoadScenario,
   onDeleteScenario,
   onPublishScenarioReport,
+  killChainStatus,
+  onToggleKillChainStep,
+  onResetKillChain,
   // planning graphics
   selectedGraphicType, setSelectedGraphicType,
   graphicLabel, setGraphicLabel,
@@ -408,6 +412,7 @@ export default function ToolPanel({
   const [showCustomLayerForm, setShowCustomLayerForm] = useState(false);
   const [scenarioName, setScenarioName] = useState('');
   const [scenarioDescription, setScenarioDescription] = useState('');
+  const [killChainType, setKillChainType] = useState('uas');
   const [customLayer, setCustomLayer] = useState({
     name: '',
     domain: 'radar',
@@ -455,6 +460,9 @@ export default function ToolPanel({
     setCustomLayer(prev => ({ ...prev, name: '', description: '' }));
     setShowCustomLayerForm(false);
   };
+  const activeKillChain = KILL_CHAIN_CHECKLISTS[killChainType];
+  const completedKillChainSteps = activeKillChain.steps.filter(step => killChainStatus?.[killChainType]?.[step.id]).length;
+  const killChainPct = Math.round((completedKillChainSteps / activeKillChain.steps.length) * 100);
 
   return (
     <div style={{
@@ -488,6 +496,117 @@ export default function ToolPanel({
         <BTN active={mode === 'impact-analysis'} onClick={() => setMode('impact-analysis')}>[05] IMPACT ANALYSIS</BTN>
         <BTN active={mode === 'place-layer'} onClick={() => setMode('place-layer')}>[06] DETECTION LAYERS</BTN>
         <BTN active={mode === 'plan-graphics'} onClick={() => setMode('plan-graphics')}>[07] PLAN GRAPHICS</BTN>
+      </Section>
+
+      <Section title="Kill Chain Checklist">
+        <div style={{ color: '#667788', fontFamily: 'monospace', fontSize: 9, lineHeight: 1.5, marginBottom: 8 }}>
+          Defensive planning checklist for UAS and missile warning workflows.
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 8 }}>
+          {Object.entries(KILL_CHAIN_CHECKLISTS).map(([key, checklist]) => (
+            <button
+              key={key}
+              onClick={() => setKillChainType(key)}
+              style={{
+                padding: '6px 5px',
+                background: killChainType === key ? `${checklist.color}22` : 'transparent',
+                border: `1px solid ${killChainType === key ? checklist.color : '#223344'}`,
+                color: killChainType === key ? checklist.color : '#556677',
+                fontFamily: 'monospace',
+                fontSize: 9,
+                cursor: 'pointer',
+              }}
+            >
+              {key.toUpperCase()}
+            </button>
+          ))}
+        </div>
+        <div style={{
+          padding: '7px 8px',
+          marginBottom: 8,
+          background: '#050D18',
+          border: `1px solid ${activeKillChain.color}44`,
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+            <span style={{ color: activeKillChain.color, fontSize: 10, fontWeight: 'bold' }}>
+              {activeKillChain.label}
+            </span>
+            <span style={{ color: '#AABBCC', fontSize: 9 }}>
+              {completedKillChainSteps}/{activeKillChain.steps.length}
+            </span>
+          </div>
+          <div style={{ height: 6, background: '#0A1520', border: '1px solid #1A2A3A', position: 'relative' }}>
+            <div style={{
+              position: 'absolute',
+              left: 0,
+              top: 0,
+              height: '100%',
+              width: `${killChainPct}%`,
+              background: activeKillChain.color,
+            }} />
+          </div>
+        </div>
+        <div style={{ maxHeight: 260, overflowY: 'auto', paddingRight: 3 }}>
+          {activeKillChain.steps.map((step, index) => {
+            const checked = Boolean(killChainStatus?.[killChainType]?.[step.id]);
+            return (
+              <label
+                key={step.id}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '18px 1fr',
+                  gap: 6,
+                  padding: '6px 0',
+                  borderBottom: '1px solid #0D1E2A',
+                  cursor: 'pointer',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => onToggleKillChainStep(killChainType, step.id)}
+                  style={{ marginTop: 2 }}
+                />
+                <span>
+                  <span style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    gap: 6,
+                    color: checked ? activeKillChain.color : '#AABBCC',
+                    fontFamily: 'monospace',
+                    fontSize: 9,
+                    fontWeight: 'bold',
+                  }}>
+                    <span>{String(index + 1).padStart(2, '0')}. {step.phase}</span>
+                    <span>{checked ? 'DONE' : 'OPEN'}</span>
+                  </span>
+                  <span style={{ display: 'block', color: '#667788', fontSize: 8, lineHeight: 1.45, marginTop: 2 }}>
+                    {step.task}
+                  </span>
+                  <span style={{ display: 'block', color: '#334455', fontSize: 8, lineHeight: 1.45, marginTop: 2 }}>
+                    Evidence: {step.evidence}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+        <button
+          onClick={() => onResetKillChain(killChainType)}
+          style={{
+            width: '100%',
+            marginTop: 8,
+            padding: '6px 5px',
+            background: 'transparent',
+            border: '1px solid #334455',
+            color: '#667788',
+            fontFamily: 'monospace',
+            fontSize: 9,
+            cursor: 'pointer',
+          }}
+        >
+          RESET {killChainType.toUpperCase()} CHECKLIST
+        </button>
       </Section>
 
       {/* Radar network toggle */}

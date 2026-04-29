@@ -14,6 +14,7 @@ import { MISSILE_THREATS } from './data/missileThreat';
 import { RADAR_SYSTEMS } from './data/radarSystems';
 import { GRAPHIC_TYPE_MAP } from './data/planningGraphics';
 import { EXERCISE_BOUNDARIES } from './data/exerciseBoundaries';
+import { createKillChainStatus } from './data/killChainChecklists';
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000';
 const WS_TRACKS_URL = import.meta.env.VITE_WS_TRACKS_URL ?? 'ws://localhost:8000/ws/tracks';
@@ -1222,6 +1223,7 @@ export default function App() {
   const [scenarios, setScenarios] = useState([]);
   const [scenarioStatus, setScenarioStatus] = useState(null);
   const [reportPanel, setReportPanel] = useState(null);
+  const [killChainStatus, setKillChainStatus] = useState(() => createKillChainStatus());
 
   // Missile sim: first click = launch, second click = target
   const missileClickRef = useRef(null); // { lat, lon, alt }
@@ -3180,6 +3182,7 @@ export default function App() {
         state_visible: stateBoundariesVisible,
         names: exerciseBoundaryNames,
       },
+      kill_chain_status: killChainStatus,
       los_analysis: losAnalysis,
       impact_analysis: impactAnalysis,
       simulation: simActive || threatIntel || simSensorEvents.length > 0 ? {
@@ -3195,6 +3198,7 @@ export default function App() {
     countryBoundariesVisible, customLayerAssets, exerciseBoundaryNames, impactAnalysis,
     intercepts, losAnalysis, planningEnv, selectedDrone, selectedMissile, simActive,
     simElapsed, simSensorEvents, simSpeed, stateBoundariesVisible, threatIntel, threatMode,
+    killChainStatus,
   ]);
 
   const refreshScenarios = useCallback(async () => {
@@ -3253,6 +3257,10 @@ export default function App() {
         setSelectedDrone(DRONE_TYPES.find(item => item.id === state.selected_threat.id) ?? DRONE_TYPES[0]);
       }
       setPlanningEnv(state.planning_env ?? DEFAULT_PLANNING_ENV);
+      setKillChainStatus({
+        ...createKillChainStatus(),
+        ...(state.kill_chain_status ?? {}),
+      });
       if (state.exercise_boundaries) {
         setCountryBoundariesVisible(Boolean(state.exercise_boundaries.country_visible));
         setStateBoundariesVisible(Boolean(state.exercise_boundaries.state_visible));
@@ -3389,6 +3397,24 @@ export default function App() {
     }
   }, []);
 
+  const toggleKillChainStep = useCallback((chainType, stepId) => {
+    setKillChainStatus(prev => ({
+      ...prev,
+      [chainType]: {
+        ...(prev[chainType] ?? {}),
+        [stepId]: !prev[chainType]?.[stepId],
+      },
+    }));
+  }, []);
+
+  const resetKillChain = useCallback((chainType) => {
+    const fresh = createKillChainStatus();
+    setKillChainStatus(prev => ({
+      ...prev,
+      [chainType]: fresh[chainType],
+    }));
+  }, []);
+
   useEffect(() => { simRef.current.speed = simSpeed; }, [simSpeed]);
 
   return (
@@ -3435,6 +3461,9 @@ export default function App() {
         onLoadScenario={restoreScenario}
         onDeleteScenario={deleteScenario}
         onPublishScenarioReport={publishScenarioReport}
+        killChainStatus={killChainStatus}
+        onToggleKillChainStep={toggleKillChainStep}
+        onResetKillChain={resetKillChain}
         selectedGraphicType={selectedGraphicType}
         setSelectedGraphicType={setSelectedGraphicType}
         graphicLabel={graphicLabel}

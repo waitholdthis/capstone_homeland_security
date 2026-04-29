@@ -818,6 +818,14 @@ function normalizeLOSResult(result, terrainProfile, observerAlt, targetAlt) {
   };
 }
 
+function withTimeout(promise, ms, label = 'operation') {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = window.setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => window.clearTimeout(timeoutId));
+}
+
 function makeErraticUASPath(basePath, drone, formationIndex = 0) {
   if (!basePath?.length) return [];
 
@@ -1915,7 +1923,11 @@ export default function App() {
       // Safe terrain height — falls back to depth-buffer height when provider isn't ready
       const sampleHeight = async (cart) => {
         try {
-          const [s] = await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, [cart]);
+          const [s] = await withTimeout(
+            Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, [cart]),
+            1800,
+            'terrain height',
+          );
           return s.height ?? cart.height ?? 0;
         } catch {
           return cart.height ?? 0;
@@ -1969,116 +1981,147 @@ export default function App() {
           setLosPending(true);
           setLosAwaitingTarget(false);
 
-          const firstPoint = firstPointRef.current;
-          const targetCartographic = Cesium.Cartographic.fromRadians(
-            cartographic.longitude,
-            cartographic.latitude,
-            height + targetAglM,
-          );
-          const targetCartesian = Cesium.Cartesian3.fromRadians(
-            targetCartographic.longitude,
-            targetCartographic.latitude,
-            targetCartographic.height,
-          );
-          const distanceKm = geodesicDistanceKm(firstPoint.lat, firstPoint.lon, lat, lon);
-          const sampleCount = Math.min(240, Math.max(64, Math.ceil(distanceKm * 18)));
-          const profilePoints = [];
-          for (let i = 0; i <= sampleCount; i++) {
-            const t = i / sampleCount;
-            profilePoints.push(Cesium.Cartographic.fromRadians(
-              Cesium.Math.lerp(firstPoint.cartographic.longitude, targetCartographic.longitude, t),
-              Cesium.Math.lerp(firstPoint.cartographic.latitude, targetCartographic.latitude, t),
-            ));
-          }
-          let sampledProfile;
           try {
-            sampledProfile = await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, profilePoints);
-          } catch {
-            sampledProfile = profilePoints.map(p => ({ height: p.height ?? 0 }));
-          }
-          const heights = sampledProfile.map(p => p.height ?? 0);
-          let result;
-          try {
-            const res = await fetch(`${BACKEND}/analyze-gap`, {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                observer_alt: firstPoint.terrainHeight + observerAglM,
-                target_alt: height + targetAglM,
-                terrain_profile: heights,
-              }),
+            const firstPoint = firstPointRef.current;
+            const targetCartographic = Cesium.Cartographic.fromRadians(
+              cartographic.longitude,
+              cartographic.latitude,
+              height + targetAglM,
+            );
+            const targetCartesian = Cesium.Cartesian3.fromRadians(
+              targetCartographic.longitude,
+              targetCartographic.latitude,
+              targetCartographic.height,
+            );
+            const distanceKm = geodesicDistanceKm(firstPoint.lat, firstPoint.lon, lat, lon);
+            const sampleCount = Math.min(240, Math.max(64, Math.ceil(distanceKm * 18)));
+            const profilePoints = [];
+            for (let i = 0; i <= sampleCount; i++) {
+              const t = sampleCount === 0 ? 0 : i / sampleCount;
+              profilePoints.push(Cesium.Cartographic.fromRadians(
+                Cesium.Math.lerp(firstPoint.cartographic.longitude, targetCartographic.longitude, t),
+                Cesium.Math.lerp(firstPoint.cartographic.latitude, targetCartographic.latitude, t),
+              ));
+            }
+            let sampledProfile;
+            try {
+              sampledProfile = await withTimeout(
+                Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, profilePoints),
+                2500,
+                'LOS terrain profile',
+              );
+            } catch {
+              sampledProfile = profilePoints.map((p, index) => {
+                const t = sampleCount === 0 ? 0 : index / sampleCount;
+                return {
+                  longitude: p.longitude,
+                  latitude: p.latitude,
+                  height: Cesium.Math.lerp(firstPoint.terrainHeight, height, t),
+                };
+              });
+            }
+            const heights = sampledProfile.map(p => p.height ?? 0);
+            let result;
+            try {
+              const controller = new AbortController();
+              const timeoutId = window.setTimeout(() => controller.abort(), 1800);
+              const res = await fetch(`${BACKEND}/analyze-gap`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                signal: controller.signal,
+                body: JSON.stringify({
+                  observer_alt: firstPoint.terrainHeight + observerAglM,
+                  target_alt: height + targetAglM,
+                  terrain_profile: heights,
+                }),
+              }).finally(() => window.clearTimeout(timeoutId));
+              result = normalizeLOSResult(await res.json(), heights, firstPoint.terrainHeight + observerAglM, height + targetAglM);
+            } catch (err) {
+              console.error('Backend offline:', err);
+              result = normalizeLOSResult(null, heights, firstPoint.terrainHeight + observerAglM, height + targetAglM);
+            }
+
+            const statusColor = result.is_detected ? Cesium.Color.LIME : Cesium.Color.RED;
+            const rayPositions = profilePoints.map((point, index) => {
+              const t = sampleCount === 0 ? 0 : index / sampleCount;
+              const rayAlt = Cesium.Math.lerp(firstPoint.terrainHeight + observerAglM, height + targetAglM, t);
+              return Cesium.Cartesian3.fromRadians(point.longitude, point.latitude, rayAlt);
             });
-            result = normalizeLOSResult(await res.json(), heights, firstPoint.terrainHeight + observerAglM, height + targetAglM);
+
+            for (let i = 0; i < rayPositions.length - 1; i++) {
+              const blocked = result.clearances[i] < 0 || result.clearances[i + 1] < 0;
+              losEntitiesRef.current.push(viewer.entities.add({
+                polyline: {
+                  positions: [rayPositions[i], rayPositions[i + 1]],
+                  width: blocked ? 5 : 4,
+                  material: blocked
+                    ? new Cesium.PolylineGlowMaterialProperty({ glowPower: 0.25, color: Cesium.Color.RED })
+                    : new Cesium.PolylineGlowMaterialProperty({ glowPower: 0.18, color: Cesium.Color.LIME }),
+                  clampToGround: false,
+                },
+              }));
+            }
+
+            losEntitiesRef.current.push(
+              viewer.entities.add({
+                position: targetCartesian,
+                point: { pixelSize: 12, color: statusColor, outlineColor: Cesium.Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+                label: {
+                  text: `${result.is_detected ? 'TARGET VISIBLE' : 'TARGET MASKED'}\n${result.distance_km?.toFixed?.(2) ?? distanceKm.toFixed(2)} km`,
+                  font: 'bold 12px monospace',
+                  fillColor: statusColor,
+                  outlineColor: Cesium.Color.BLACK,
+                  outlineWidth: 3,
+                  style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                  pixelOffset: new Cesium.Cartesian2(0, -34),
+                },
+              }),
+            );
+
+            if (!result.is_detected && result.first_obstruction_index != null) {
+              const obstructionPoint = sampledProfile[result.first_obstruction_index];
+              losEntitiesRef.current.push(viewer.entities.add({
+                position: Cesium.Cartesian3.fromRadians(
+                  obstructionPoint.longitude,
+                  obstructionPoint.latitude,
+                  (obstructionPoint.height ?? 0) + 8,
+                ),
+                point: { pixelSize: 10, color: Cesium.Color.RED, outlineColor: Cesium.Color.WHITE, outlineWidth: 1, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+                label: {
+                  text: `FIRST OBSTRUCTION\n${result.max_obstruction_m}m ABOVE LOS`,
+                  font: 'bold 10px monospace',
+                  fillColor: Cesium.Color.RED,
+                  outlineColor: Cesium.Color.BLACK,
+                  outlineWidth: 2,
+                  style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                  pixelOffset: new Cesium.Cartesian2(0, -24),
+                },
+              }));
+            }
+
+            setLosAnalysis({
+              ...result,
+              distance_km: distanceKm,
+              observer_agl_m: observerAglM,
+              target_agl_m: targetAglM,
+            });
+            firstPointRef.current = null;
           } catch (err) {
-            console.error('Backend offline:', err);
-            result = normalizeLOSResult(null, heights, firstPoint.terrainHeight + observerAglM, height + targetAglM);
+            console.error('LOS analysis failed:', err);
+            setLosAnalysis({
+              is_detected: false,
+              status: 'LOS ANALYSIS FAILED',
+              distance_km: geodesicDistanceKm(firstPointRef.current.lat, firstPointRef.current.lon, lat, lon),
+              observer_agl_m: observerAglM,
+              target_agl_m: targetAglM,
+              obstruction_count: 0,
+              min_clearance_m: null,
+              max_obstruction_m: null,
+              clearances: [],
+            });
+          } finally {
+            setLosPending(false);
           }
-
-          const statusColor = result.is_detected ? Cesium.Color.LIME : Cesium.Color.RED;
-          const rayPositions = profilePoints.map((point, index) => {
-            const t = sampleCount === 0 ? 0 : index / sampleCount;
-            const rayAlt = Cesium.Math.lerp(firstPoint.terrainHeight + observerAglM, height + targetAglM, t);
-            return Cesium.Cartesian3.fromRadians(point.longitude, point.latitude, rayAlt);
-          });
-
-          for (let i = 0; i < rayPositions.length - 1; i++) {
-            const blocked = result.clearances[i] < 0 || result.clearances[i + 1] < 0;
-            losEntitiesRef.current.push(viewer.entities.add({
-              polyline: {
-                positions: [rayPositions[i], rayPositions[i + 1]],
-                width: blocked ? 5 : 4,
-                material: blocked
-                  ? new Cesium.PolylineGlowMaterialProperty({ glowPower: 0.25, color: Cesium.Color.RED })
-                  : new Cesium.PolylineGlowMaterialProperty({ glowPower: 0.18, color: Cesium.Color.LIME }),
-                clampToGround: false,
-              },
-            }));
-          }
-
-          losEntitiesRef.current.push(
-            viewer.entities.add({
-              position: targetCartesian,
-              point: { pixelSize: 12, color: statusColor, outlineColor: Cesium.Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
-              label: {
-                text: `${result.is_detected ? 'TARGET VISIBLE' : 'TARGET MASKED'}\n${result.distance_km?.toFixed?.(2) ?? distanceKm.toFixed(2)} km`,
-                font: 'bold 12px monospace',
-                fillColor: statusColor,
-                outlineColor: Cesium.Color.BLACK,
-                outlineWidth: 3,
-                style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-                pixelOffset: new Cesium.Cartesian2(0, -34),
-              },
-            }),
-          );
-
-          if (!result.is_detected && result.first_obstruction_index != null) {
-            const obstructionPoint = sampledProfile[result.first_obstruction_index];
-            losEntitiesRef.current.push(viewer.entities.add({
-              position: Cesium.Cartesian3.fromRadians(
-                obstructionPoint.longitude,
-                obstructionPoint.latitude,
-                (obstructionPoint.height ?? 0) + 8,
-              ),
-              point: { pixelSize: 10, color: Cesium.Color.RED, outlineColor: Cesium.Color.WHITE, outlineWidth: 1, disableDepthTestDistance: Number.POSITIVE_INFINITY },
-              label: {
-                text: `FIRST OBSTRUCTION\n${result.max_obstruction_m}m ABOVE LOS`,
-                font: 'bold 10px monospace',
-                fillColor: Cesium.Color.RED,
-                outlineColor: Cesium.Color.BLACK,
-                outlineWidth: 2,
-                style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-                pixelOffset: new Cesium.Cartesian2(0, -24),
-              },
-            }));
-          }
-
-          setLosAnalysis({
-            ...result,
-            distance_km: distanceKm,
-            observer_agl_m: observerAglM,
-            target_agl_m: targetAglM,
-          });
-          setLosPending(false);
-          firstPointRef.current = null;
         }
         return;
       }

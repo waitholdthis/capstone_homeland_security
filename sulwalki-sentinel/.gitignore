@@ -1,0 +1,16 @@
+.codex
+.claude/
+
+server/venv/
+server/__pycache__/
+**/__pycache__/
+*.py[cod]
+
+client/node_modules/
+client/dist/
+client/.env
+client/.env.*
+!client/.env.example
+
+data/scenarios/*.json
+dist-release/

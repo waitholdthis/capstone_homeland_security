@@ -387,6 +387,13 @@ export default function ToolPanel({
   onImportKmz,
   onRemoveKmzLayer,
   onToggleKmzLayer,
+  scenarios,
+  scenarioStatus,
+  onSaveScenario,
+  onRefreshScenarios,
+  onLoadScenario,
+  onDeleteScenario,
+  onPublishScenarioReport,
   // planning graphics
   selectedGraphicType, setSelectedGraphicType,
   graphicLabel, setGraphicLabel,
@@ -399,6 +406,8 @@ export default function ToolPanel({
   const [expandedTraj, setExpandedTraj] = useState('ballistic');
   const [expandedImpactTraj, setExpandedImpactTraj] = useState('ballistic');
   const [showCustomLayerForm, setShowCustomLayerForm] = useState(false);
+  const [scenarioName, setScenarioName] = useState('');
+  const [scenarioDescription, setScenarioDescription] = useState('');
   const [customLayer, setCustomLayer] = useState({
     name: '',
     domain: 'radar',
@@ -1290,6 +1299,154 @@ export default function ToolPanel({
           </Section>
         </>
       )}
+
+      {/* ── SCENARIO SAVE / LOAD / REPORT ── */}
+      <Section title="Scenarios & Reports">
+        <div style={{ color: '#667788', fontFamily: 'monospace', fontSize: 9, lineHeight: 1.5, marginBottom: 8 }}>
+          Save the current planner layout to the backend, reload previous scenarios, and publish a military-format gap analysis report.
+        </div>
+        <input
+          value={scenarioName}
+          onChange={event => setScenarioName(event.target.value)}
+          placeholder="Scenario name"
+          style={{ ...inputStyle, marginBottom: 5 }}
+        />
+        <textarea
+          value={scenarioDescription}
+          onChange={event => setScenarioDescription(event.target.value)}
+          placeholder="Mission / exercise description"
+          rows={3}
+          style={{ ...inputStyle, resize: 'vertical', marginBottom: 6 }}
+        />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
+          <button
+            onClick={() => {
+              const fallback = `MDPT Scenario ${new Date().toLocaleString()}`;
+              onSaveScenario({
+                name: scenarioName.trim() || fallback,
+                description: scenarioDescription.trim(),
+              });
+              if (!scenarioName.trim()) setScenarioName(fallback);
+            }}
+            style={{
+              padding: '6px 5px',
+              background: '#00FF7F18',
+              border: '1px solid #00FF7F66',
+              color: '#00FF7F',
+              fontFamily: 'monospace',
+              fontSize: 9,
+              cursor: 'pointer',
+            }}
+          >
+            SAVE
+          </button>
+          <button
+            onClick={onRefreshScenarios}
+            style={{
+              padding: '6px 5px',
+              background: 'transparent',
+              border: '1px solid #2A4A5A',
+              color: '#77BBDD',
+              fontFamily: 'monospace',
+              fontSize: 9,
+              cursor: 'pointer',
+            }}
+          >
+            REFRESH
+          </button>
+        </div>
+
+        {scenarioStatus && (
+          <div style={{
+            padding: '5px 7px',
+            marginBottom: 6,
+            background: scenarioStatus.level === 'error' ? '#331111' : scenarioStatus.level === 'success' ? '#062016' : '#061422',
+            border: `1px solid ${scenarioStatus.level === 'error' ? '#AA3333' : scenarioStatus.level === 'success' ? '#00AA6644' : '#2A4A5A'}`,
+            color: scenarioStatus.level === 'error' ? '#FF7777' : scenarioStatus.level === 'success' ? '#00FF99' : '#77BBDD',
+            fontSize: 8,
+            lineHeight: 1.4,
+          }}>
+            {scenarioStatus.message}
+          </div>
+        )}
+
+        <div style={{ maxHeight: 190, overflowY: 'auto', paddingRight: 3 }}>
+          {(scenarios ?? []).map(scenario => (
+            <div key={scenario.id} style={{
+              padding: '6px 0',
+              borderBottom: '1px solid #0D1E2A',
+              fontFamily: 'monospace',
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, marginBottom: 3 }}>
+                <span style={{
+                  color: '#AABBCC',
+                  fontSize: 9,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}>
+                  {scenario.name}
+                </span>
+                <span style={{ color: '#334455', fontSize: 8, flexShrink: 0 }}>
+                  {scenario.capability_count} CAP
+                </span>
+              </div>
+              <div style={{ color: '#334455', fontSize: 8, marginBottom: 5 }}>
+                {scenario.updated_at} · {scenario.unit_count} units · {scenario.waypoint_count} WP
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 4 }}>
+                <button
+                  onClick={() => onLoadScenario(scenario.id)}
+                  style={{
+                    padding: '4px 0',
+                    background: '#061422',
+                    border: '1px solid #2A4A5A',
+                    color: '#77BBDD',
+                    fontFamily: 'monospace',
+                    fontSize: 8,
+                    cursor: 'pointer',
+                  }}
+                >
+                  LOAD
+                </button>
+                <button
+                  onClick={() => onPublishScenarioReport(scenario.id)}
+                  style={{
+                    padding: '4px 0',
+                    background: '#1F1600',
+                    border: '1px solid #AA880044',
+                    color: '#FFCC66',
+                    fontFamily: 'monospace',
+                    fontSize: 8,
+                    cursor: 'pointer',
+                  }}
+                >
+                  REPORT
+                </button>
+                <button
+                  onClick={() => onDeleteScenario(scenario.id)}
+                  style={{
+                    padding: '4px 0',
+                    background: 'transparent',
+                    border: '1px solid #442222',
+                    color: '#AA4444',
+                    fontFamily: 'monospace',
+                    fontSize: 8,
+                    cursor: 'pointer',
+                  }}
+                >
+                  DEL
+                </button>
+              </div>
+            </div>
+          ))}
+          {(scenarios ?? []).length === 0 && (
+            <div style={{ color: '#2A3A4A', fontSize: 8, fontFamily: 'monospace' }}>
+              No saved scenarios yet.
+            </div>
+          )}
+        </div>
+      </Section>
 
       {/* ── KMZ / KML IMPORT ── */}
       <div style={{ marginBottom: 70 }}>

@@ -1046,6 +1046,20 @@ function updateEntityMapPosition(entity, lat, lon, alt, cartesian) {
   if (entity._cuasData) {
     entity._cuasData = { ...entity._cuasData, lat, lon, terrainAlt: alt };
   }
+  if (entity._unitData) {
+    entity._unitData = { ...entity._unitData, lat, lon, alt };
+  }
+}
+
+function entityGeo(entity) {
+  const value = entity?.position?.getValue?.(Cesium.JulianDate.now()) ?? entity?.position;
+  if (!value) return null;
+  const cartographic = Cesium.Cartographic.fromCartesian(value);
+  return {
+    lat: Number(Cesium.Math.toDegrees(cartographic.latitude).toFixed(6)),
+    lon: Number(Cesium.Math.toDegrees(cartographic.longitude).toFixed(6)),
+    alt: Number((cartographic.height ?? 0).toFixed(1)),
+  };
 }
 
 function makeGraphicAnchor(points) {
@@ -1203,6 +1217,11 @@ export default function App() {
   const kmzSourcesRef = useRef({});                           // id → CesiumKmlDataSource
   const kmzObjectUrlsRef = useRef({});
   const [kmzLoadStatus, setKmzLoadStatus] = useState(null);
+
+  // Scenario persistence + reporting
+  const [scenarios, setScenarios] = useState([]);
+  const [scenarioStatus, setScenarioStatus] = useState(null);
+  const [reportPanel, setReportPanel] = useState(null);
 
   // Missile sim: first click = launch, second click = target
   const missileClickRef = useRef(null); // { lat, lon, alt }
@@ -2219,11 +2238,20 @@ export default function App() {
         image.src = canvas.toDataURL();
         await new Promise(r => { image.onload = r; });
         const dragGroup = makeDragGroup('unit');
-        placedRef.current.push(markDraggable(viewer.entities.add({
+        const unitEntity = markDraggable(viewer.entities.add({
           position: cartesian,
           billboard: { image, verticalOrigin: Cesium.VerticalOrigin.BOTTOM, scale: 1.0, disableDepthTestDistance: Number.POSITIVE_INFINITY },
           label: { text: selectedUnit.label, font: '11px monospace', pixelOffset: new Cesium.Cartesian2(0, -(canvas.height + 4)), fillColor: faction === FACTIONS.FRIENDLY ? Cesium.Color.CYAN : Cesium.Color.RED, outlineColor: Cesium.Color.BLACK, outlineWidth: 2, style: Cesium.LabelStyle.FILL_AND_OUTLINE },
-        }), { kind: 'unit', group: dragGroup, label: selectedUnit.label }));
+        }), { kind: 'unit', group: dragGroup, label: selectedUnit.label });
+        unitEntity._unitData = {
+          id: selectedUnit.id,
+          name: selectedUnit.label,
+          faction,
+          lat,
+          lon,
+          alt: cartographic.height ?? 0,
+        };
+        placedRef.current.push(unitEntity);
         return;
       }
 
@@ -3106,6 +3134,261 @@ export default function App() {
     setGraphicPointCount(0);
   }, [handleStop, stopImpactAnimation]);
 
+  const collectScenarioState = useCallback(() => {
+    const seenGroups = new Set();
+    const units = [];
+    const capabilities = [];
+
+    placedRef.current.forEach(entity => {
+      if (!entity?._dragGroup || seenGroups.has(entity._dragGroup)) return;
+      seenGroups.add(entity._dragGroup);
+      const geo = entityGeo(entity);
+      if (!geo) return;
+
+      if (entity._unitData || entity._dragKind === 'unit') {
+        units.push({
+          ...(entity._unitData ?? {}),
+          name: entity._deleteLabel ?? entity._unitData?.name ?? 'Unit',
+          faction: entity._unitData?.faction ?? 'friendly',
+          ...geo,
+        });
+        return;
+      }
+
+      if (entity._cuasData) {
+        capabilities.push({
+          ...entity._cuasData,
+          name: entity._deleteLabel ?? entity._cuasData.name,
+          kind: entity._dragKind,
+          ...geo,
+        });
+      }
+    });
+
+    return {
+      version: 1,
+      saved_at: new Date().toISOString(),
+      units,
+      capabilities,
+      waypoints: waypointsRef.current,
+      custom_layer_assets: customLayerAssets,
+      selected_threat: threatMode === 'missile' ? selectedMissile : selectedDrone,
+      threat_mode: threatMode,
+      planning_env: planningEnv,
+      exercise_boundaries: {
+        country_visible: countryBoundariesVisible,
+        state_visible: stateBoundariesVisible,
+        names: exerciseBoundaryNames,
+      },
+      los_analysis: losAnalysis,
+      impact_analysis: impactAnalysis,
+      simulation: simActive || threatIntel || simSensorEvents.length > 0 ? {
+        active: simActive,
+        elapsed_s: simElapsed,
+        speed: simSpeed,
+        intercepts,
+        sensor_events: simSensorEvents,
+        threat_intel: threatIntel,
+      } : null,
+    };
+  }, [
+    countryBoundariesVisible, customLayerAssets, exerciseBoundaryNames, impactAnalysis,
+    intercepts, losAnalysis, planningEnv, selectedDrone, selectedMissile, simActive,
+    simElapsed, simSensorEvents, simSpeed, stateBoundariesVisible, threatIntel, threatMode,
+  ]);
+
+  const refreshScenarios = useCallback(async () => {
+    try {
+      const res = await fetch(`${BACKEND}/api/scenarios`);
+      const data = await res.json();
+      setScenarios(data.scenarios ?? []);
+    } catch (err) {
+      console.error('scenario list failed:', err);
+      setScenarioStatus({ level: 'error', message: 'Could not load saved scenarios.' });
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      refreshScenarios();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [refreshScenarios]);
+
+  const saveScenario = useCallback(async ({ name, description }) => {
+    setScenarioStatus({ level: 'loading', message: 'Saving scenario...' });
+    try {
+      const res = await fetch(`${BACKEND}/api/scenarios`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, description, state: collectScenarioState() }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.status !== 'ok') throw new Error(data.detail ?? 'save failed');
+      setScenarioStatus({ level: 'success', message: `Saved ${data.scenario.name}.` });
+      await refreshScenarios();
+    } catch (err) {
+      console.error('scenario save failed:', err);
+      setScenarioStatus({ level: 'error', message: 'Scenario save failed. Is the backend running?' });
+    }
+  }, [collectScenarioState, refreshScenarios]);
+
+  const restoreScenario = useCallback(async (scenarioId) => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+
+    setScenarioStatus({ level: 'loading', message: 'Loading scenario...' });
+    try {
+      const res = await fetch(`${BACKEND}/api/scenarios/${scenarioId}`);
+      const data = await res.json();
+      if (!res.ok || data.status !== 'ok') throw new Error(data.detail ?? 'load failed');
+      const state = data.scenario.state ?? {};
+
+      handleClearAll();
+      setCustomLayerAssets(state.custom_layer_assets ?? []);
+      setThreatMode(state.threat_mode ?? 'uas');
+      if (state.threat_mode === 'missile' && state.selected_threat?.id) {
+        setSelectedMissile(MISSILE_THREATS.find(item => item.id === state.selected_threat.id) ?? MISSILE_THREATS[0]);
+      } else if (state.selected_threat?.id) {
+        setSelectedDrone(DRONE_TYPES.find(item => item.id === state.selected_threat.id) ?? DRONE_TYPES[0]);
+      }
+      setPlanningEnv(state.planning_env ?? DEFAULT_PLANNING_ENV);
+      if (state.exercise_boundaries) {
+        setCountryBoundariesVisible(Boolean(state.exercise_boundaries.country_visible));
+        setStateBoundariesVisible(Boolean(state.exercise_boundaries.state_visible));
+        setExerciseBoundaryNames(state.exercise_boundaries.names ?? {});
+      }
+
+      for (const unit of state.units ?? []) {
+        const unitType = UNIT_TYPES.find(u => u.id === unit.id) ?? UNIT_TYPES[0];
+        const factionValue = unit.faction ?? FACTIONS.FRIENDLY;
+        const canvas = milSymbolCanvas(unitType.sidcs[factionValue] ?? unitType.sidcs[FACTIONS.FRIENDLY]);
+        if (!canvas) continue;
+        const image = new Image();
+        image.src = canvas.toDataURL();
+        await new Promise(resolve => { image.onload = resolve; });
+        const group = makeDragGroup('unit');
+        const entity = markDraggable(viewer.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(unit.lon, unit.lat, unit.alt ?? 0),
+          billboard: { image, verticalOrigin: Cesium.VerticalOrigin.BOTTOM, scale: 1.0, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+          label: {
+            text: unit.name ?? unitType.label,
+            font: '11px monospace',
+            pixelOffset: new Cesium.Cartesian2(0, -(canvas.height + 4)),
+            fillColor: factionValue === FACTIONS.FRIENDLY ? Cesium.Color.CYAN : Cesium.Color.RED,
+            outlineColor: Cesium.Color.BLACK,
+            outlineWidth: 2,
+            style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          },
+        }), { kind: 'unit', group, label: unit.name ?? unitType.label });
+        entity._unitData = { ...unit, faction: factionValue };
+        placedRef.current.push(entity);
+      }
+
+      for (const cap of state.capabilities ?? []) {
+        const color = cesiumColorFromHex(cap.color ?? '#00BFFF');
+        const position = Cesium.Cartesian3.fromDegrees(cap.lon, cap.lat, cap.alt ?? cap.terrainAlt ?? 0);
+        const group = makeDragGroup(cap.kind ?? 'capability');
+        const entities = [];
+
+        const marker = markDraggable(viewer.entities.add({
+          position,
+          point: cap.kind === 'layer' ? {
+            pixelSize: 13,
+            color,
+            outlineColor: Cesium.Color.WHITE,
+            outlineWidth: 2,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          } : undefined,
+          label: {
+            text: cap.name,
+            font: 'bold 11px monospace',
+            pixelOffset: new Cesium.Cartesian2(0, -28),
+            fillColor: color,
+            outlineColor: Cesium.Color.BLACK,
+            outlineWidth: 2,
+            style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          },
+        }), { kind: cap.kind ?? 'cuas', group, label: cap.name });
+        marker._cuasData = { ...cap };
+        entities.push(marker);
+
+        if ((cap.rangeKm ?? 0) > 0) {
+          const radiusM = cap.rangeKm * 1000;
+          const ceilingM = Math.max((cap.altitudeFtAGL ?? 0) * 0.3048, cap.kind === 'layer' ? radiusM * 0.12 : radiusM, 150);
+          const ring = markDraggable(viewer.entities.add({
+            position,
+            ellipsoid: {
+              radii: new Cesium.Cartesian3(radiusM, radiusM, ceilingM),
+              minimumCone: 0,
+              maximumCone: Cesium.Math.PI_OVER_TWO,
+              material: new Cesium.ColorMaterialProperty(color.withAlpha(0.075)),
+              outline: true,
+              outlineColor: color.withAlpha(0.75),
+              outlineWidth: 1.5,
+              slicePartitions: 48,
+              stackPartitions: 20,
+              subdivisions: 96,
+            },
+          }), { kind: cap.kind ?? 'cuas', group, label: cap.name });
+          ring._cuasData = { ...cap };
+          entities.push(ring);
+        }
+        placedRef.current.push(...entities);
+      }
+
+      waypointsRef.current = state.waypoints ?? [];
+      waypointEntitiesRef.current = waypointsRef.current.map((wp, index) => markDraggable(viewer.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(wp.lon, wp.lat, wp.alt ?? 0),
+        point: { pixelSize: 8, color: Cesium.Color.ORANGERED, outlineColor: Cesium.Color.WHITE, outlineWidth: 1, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+        label: { text: `WP${index + 1}`, font: '10px monospace', pixelOffset: new Cesium.Cartesian2(0, -16), fillColor: Cesium.Color.ORANGERED },
+      }), { kind: 'waypoint', label: `WP${index + 1}`, waypointIndex: index }));
+      setWaypointCount(waypointsRef.current.length);
+
+      if (waypointsRef.current.length >= 2) {
+        pathLineRef.current = viewer.entities.add({
+          polyline: {
+            positions: waypointsRef.current.map(wp => Cesium.Cartesian3.fromDegrees(wp.lon, wp.lat, wp.alt ?? 0)),
+            width: 2,
+            material: new Cesium.PolylineDashMaterialProperty({ color: Cesium.Color.ORANGERED }),
+          },
+        });
+      }
+
+      setScenarioStatus({ level: 'success', message: `Loaded ${data.scenario.name}.` });
+      viewer.scene.requestRender();
+    } catch (err) {
+      console.error('scenario load failed:', err);
+      setScenarioStatus({ level: 'error', message: 'Scenario load failed.' });
+    }
+  }, [handleClearAll]);
+
+  const deleteScenario = useCallback(async (scenarioId) => {
+    setScenarioStatus({ level: 'loading', message: 'Deleting scenario...' });
+    try {
+      await fetch(`${BACKEND}/api/scenarios/${scenarioId}`, { method: 'DELETE' });
+      setScenarioStatus({ level: 'success', message: 'Scenario deleted.' });
+      await refreshScenarios();
+    } catch (err) {
+      console.error('scenario delete failed:', err);
+      setScenarioStatus({ level: 'error', message: 'Scenario delete failed.' });
+    }
+  }, [refreshScenarios]);
+
+  const publishScenarioReport = useCallback(async (scenarioId) => {
+    setScenarioStatus({ level: 'loading', message: 'Publishing report...' });
+    try {
+      const res = await fetch(`${BACKEND}/api/scenarios/${scenarioId}/report`);
+      const data = await res.json();
+      if (!res.ok || data.status !== 'ok') throw new Error(data.detail ?? 'report failed');
+      setReportPanel(data);
+      setScenarioStatus({ level: 'success', message: 'Report generated.' });
+    } catch (err) {
+      console.error('scenario report failed:', err);
+      setScenarioStatus({ level: 'error', message: 'Report generation failed.' });
+    }
+  }, []);
+
   useEffect(() => { simRef.current.speed = simSpeed; }, [simSpeed]);
 
   return (
@@ -3145,6 +3428,13 @@ export default function App() {
         onImportKmz={loadKmzFile}
         onRemoveKmzLayer={removeKmzLayer}
         onToggleKmzLayer={toggleKmzLayerVisibility}
+        scenarios={scenarios}
+        scenarioStatus={scenarioStatus}
+        onSaveScenario={saveScenario}
+        onRefreshScenarios={refreshScenarios}
+        onLoadScenario={restoreScenario}
+        onDeleteScenario={deleteScenario}
+        onPublishScenarioReport={publishScenarioReport}
         selectedGraphicType={selectedGraphicType}
         setSelectedGraphicType={setSelectedGraphicType}
         graphicLabel={graphicLabel}
@@ -3202,6 +3492,12 @@ export default function App() {
           connected={dataLinkConnected}
           tracks={Object.values(externalTracks)}
           connectionUrl={WS_TRACKS_URL}
+        />
+      )}
+      {reportPanel && (
+        <ScenarioReportPanel
+          report={reportPanel}
+          onClose={() => setReportPanel(null)}
         />
       )}
       {mode === 'los' && (
@@ -3290,6 +3586,87 @@ function SelectedMapItemPanel({ item, onDelete, onRename }) {
           </button>
         </form>
       )}
+    </div>
+  );
+}
+
+function ScenarioReportPanel({ report, onClose }) {
+  const markdown = report.report_markdown ?? '';
+  const downloadReport = () => {
+    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `mdpt-scenario-report-${report.scenario_id}.md`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div style={{
+      position: 'absolute',
+      top: 24,
+      right: 24,
+      width: 520,
+      maxWidth: 'calc(100vw - 340px)',
+      maxHeight: 'calc(100vh - 48px)',
+      zIndex: 24,
+      background: 'rgba(3, 8, 15, 0.98)',
+      border: '1px solid #00BFFF66',
+      boxShadow: '0 0 24px #00BFFF22',
+      color: '#AABBCC',
+      fontFamily: 'monospace',
+      display: 'flex',
+      flexDirection: 'column',
+    }}>
+      <div style={{
+        padding: '9px 12px',
+        borderBottom: '1px solid #0D3D55',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+      }}>
+        <div>
+          <div style={{ color: '#00BFFF', fontSize: 11, fontWeight: 'bold', letterSpacing: '0.12em' }}>
+            PUBLISHED SCENARIO REPORT
+          </div>
+          <div style={{ color: '#445566', fontSize: 8 }}>{report.generated_at}</div>
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button onClick={downloadReport} style={{
+            background: '#061422',
+            border: '1px solid #00BFFF66',
+            color: '#00BFFF',
+            fontFamily: 'monospace',
+            fontSize: 9,
+            padding: '5px 8px',
+            cursor: 'pointer',
+          }}>
+            DOWNLOAD MD
+          </button>
+          <button onClick={onClose} style={{
+            background: 'transparent',
+            border: '1px solid #442222',
+            color: '#AA4444',
+            fontFamily: 'monospace',
+            fontSize: 9,
+            padding: '5px 8px',
+            cursor: 'pointer',
+          }}>
+            CLOSE
+          </button>
+        </div>
+      </div>
+      <pre style={{
+        margin: 0,
+        padding: 12,
+        overflow: 'auto',
+        whiteSpace: 'pre-wrap',
+        lineHeight: 1.45,
+        fontSize: 10,
+      }}>
+        {markdown}
+      </pre>
     </div>
   );
 }

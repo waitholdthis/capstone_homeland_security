@@ -11,3 +11,5 @@ client/dist/
 client/.env
 client/.env.*
 !client/.env.example
+
+data/scenarios/*.json

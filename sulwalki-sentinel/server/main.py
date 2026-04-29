@@ -2,14 +2,17 @@ from contextlib import asynccontextmanager
 import asyncio
 import io
 import json
+from datetime import datetime, timezone
+from pathlib import Path
 import time
+import uuid
 import zipfile
 import xml.etree.ElementTree as ET
 
 from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Any, List, Optional
 import numpy as np
 import math
 from physics_engine import (
@@ -50,6 +53,9 @@ app.add_middleware(
 )
 
 # ---------- models ----------
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+SCENARIO_DIR = BASE_DIR / "data" / "scenarios"
 
 class LOSRequest(BaseModel):
     observer_alt: float
@@ -117,6 +123,11 @@ class InterceptRequest(BaseModel):
     flight_path: List[dict]
     cuas_systems: List[CUASSystem]
 
+class ScenarioPayload(BaseModel):
+    name: str
+    description: str = ""
+    state: dict[str, Any] = {}
+
 # ---------- helpers ----------
 
 MACH_TO_MS = 343.0  # m/s per Mach at sea level
@@ -163,6 +174,208 @@ def hypersonic_arc(t: float, launch_alt: float, target_alt: float, apogee_m: flo
         # Slight S-curve for maneuvering glide
         s_smooth = s * s * (3 - 2 * s)
         return lerp(launch_alt + apogee_m, target_alt, s_smooth)
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+def _scenario_path(scenario_id: str) -> Path:
+    safe_id = "".join(ch for ch in scenario_id if ch.isalnum() or ch in ("-", "_"))
+    return SCENARIO_DIR / f"{safe_id}.json"
+
+def _load_scenario_doc(scenario_id: str) -> dict[str, Any] | None:
+    path = _scenario_path(scenario_id)
+    if not path.exists():
+        return None
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+def _scenario_summary(doc: dict[str, Any]) -> dict[str, Any]:
+    state = doc.get("state", {})
+    return {
+        "id": doc.get("id"),
+        "name": doc.get("name"),
+        "description": doc.get("description", ""),
+        "created_at": doc.get("created_at"),
+        "updated_at": doc.get("updated_at"),
+        "capability_count": len(state.get("capabilities", [])),
+        "unit_count": len(state.get("units", [])),
+        "waypoint_count": len(state.get("waypoints", [])),
+        "has_impact_analysis": bool(state.get("impact_analysis")),
+        "has_simulation": bool(state.get("simulation")),
+    }
+
+def _domain_counts(capabilities: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for cap in capabilities:
+        domains = cap.get("domains") or [cap.get("type") or "unknown"]
+        for domain in domains:
+            key = str(domain or "unknown").upper()
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+def _gap_assessment(state: dict[str, Any]) -> dict[str, Any]:
+    capabilities = state.get("capabilities", [])
+    waypoints = state.get("waypoints", [])
+    simulation = state.get("simulation") or {}
+    impact = state.get("impact_analysis") or {}
+    domains = _domain_counts(capabilities)
+    coverage = (simulation.get("threat_intel") or {}).get("coverage") or {}
+    gaps = coverage.get("gaps") or []
+    longest_gap_s = coverage.get("longest_gap_s")
+    coverage_ratio = coverage.get("coverage_ratio")
+
+    findings: list[str] = []
+    recommendations: list[str] = []
+
+    required_domains = ["RADAR", "RF", "EOIR", "ACOUSTIC", "CYBER-OSINT"]
+    missing_domains = [d for d in required_domains if domains.get(d, 0) == 0]
+    if missing_domains:
+        findings.append(f"Detection architecture is missing organic {', '.join(missing_domains)} layer coverage.")
+        recommendations.append("Add complementary sensors for each missing domain to reduce single-sensor dependency and improve classification confidence.")
+
+    radar_like = domains.get("RADAR", 0) + domains.get("IAMD", 0)
+    if radar_like < 2:
+        findings.append("Radar/IAMD layer has limited redundancy; one outage or terrain mask could create an immediate surveillance gap.")
+        recommendations.append("Add at least one overlapping radar or IAMD sensor with a different location, band, or elevation geometry.")
+
+    if len(capabilities) < 3:
+        findings.append("Current capability density is low for layered defense planning.")
+        recommendations.append("Build a layered baseline with detect, classify, track, decide, and defeat functions before validating against threat paths.")
+
+    if waypoints and len(waypoints) < 2:
+        findings.append("Threat path has only one waypoint; time-to-impact and coverage gap analysis require an origin and terminal point.")
+        recommendations.append("Add at least two threat waypoints, then rerun the simulation to populate detection timelines.")
+
+    if isinstance(coverage_ratio, (int, float)) and coverage_ratio < 0.7:
+        findings.append(f"Simulated sensor coverage is {coverage_ratio:.0%}, below a robust planning threshold.")
+        recommendations.append("Reposition sensors to overlap the longest blind segment, then rerun the threat simulation.")
+
+    if isinstance(longest_gap_s, (int, float)) and longest_gap_s > 30:
+        findings.append(f"Longest blind gap is {longest_gap_s:.1f} seconds.")
+        recommendations.append("Prioritize short-range RF/EOIR/acoustic fills near the blind segment and add cueing from the first detecting radar.")
+
+    detections = impact.get("radar_detections") or []
+    flight_time = impact.get("flight_time_s")
+    if impact and not detections:
+        findings.append("Impact analysis exists but no radar detections are recorded for the impact track.")
+        recommendations.append("Validate sensor placement, range, altitude limits, and radar horizon against the launch-to-impact geometry.")
+
+    if isinstance(flight_time, (int, float)) and flight_time < 120:
+        findings.append(f"Warning timeline is compressed at {flight_time:.1f} seconds from launch to impact.")
+        recommendations.append("Pre-plan protected positions, rehearse immediate action drills, and place early-warning sensors closer to likely launch corridors.")
+
+    if not findings:
+        findings.append("No critical architecture gaps were detected from the saved scenario data.")
+        recommendations.append("Stress-test the plan with faster threats, lower-altitude ingress, weather degradation, and sensor outages.")
+
+    return {
+        "domain_counts": domains,
+        "missing_domains": missing_domains,
+        "findings": findings,
+        "recommendations": recommendations,
+        "coverage_ratio": coverage_ratio,
+        "longest_gap_s": longest_gap_s,
+        "blind_gaps": gaps[:5],
+    }
+
+def _format_report(doc: dict[str, Any]) -> str:
+    state = doc.get("state", {})
+    capabilities = state.get("capabilities", [])
+    units = state.get("units", [])
+    waypoints = state.get("waypoints", [])
+    impact = state.get("impact_analysis") or {}
+    simulation = state.get("simulation") or {}
+    threat = state.get("selected_threat") or {}
+    gap = _gap_assessment(state)
+    lines = [
+        "# MDPT SCENARIO REPORT",
+        "",
+        f"REPORT TYPE: Military planning gap analysis",
+        f"SCENARIO: {doc.get('name', 'Untitled Scenario')}",
+        f"SCENARIO ID: {doc.get('id')}",
+        f"GENERATED: {_utc_now_iso()}",
+        f"LAST UPDATED: {doc.get('updated_at')}",
+        "",
+        "## 1. EXECUTIVE SUMMARY",
+        "",
+        f"- Units placed: {len(units)}",
+        f"- Detection / weapon capabilities placed: {len(capabilities)}",
+        f"- Threat waypoints: {len(waypoints)}",
+        f"- Selected threat: {threat.get('name', 'Not specified')}",
+        f"- Coverage ratio: {gap['coverage_ratio']:.0%}" if isinstance(gap["coverage_ratio"], (int, float)) else "- Coverage ratio: Not simulated",
+        f"- Longest blind gap: {gap['longest_gap_s']:.1f} seconds" if isinstance(gap["longest_gap_s"], (int, float)) else "- Longest blind gap: Not simulated",
+        "",
+        "## 2. MISSION / SCENARIO DESCRIPTION",
+        "",
+        doc.get("description") or "No narrative description was provided by the planner.",
+        "",
+        "## 3. FRIENDLY / ENEMY UNIT LAYOUT",
+        "",
+    ]
+
+    if units:
+        for unit in units:
+            lines.append(f"- {unit.get('name', 'Unit')} | faction={unit.get('faction', 'unknown')} | lat={unit.get('lat')} lon={unit.get('lon')}")
+    else:
+        lines.append("- No maneuver units saved in this scenario.")
+
+    lines.extend(["", "## 4. SENSOR AND WEAPON ARCHITECTURE", ""])
+    if capabilities:
+        for cap in capabilities:
+            domains = ", ".join(cap.get("domains") or [cap.get("type", "unknown")])
+            lines.append(
+                f"- {cap.get('name', 'Capability')} | type={cap.get('type', 'unknown')} | domains={domains} | "
+                f"range={cap.get('rangeKm', 'n/a')} km | ceiling={cap.get('altitudeFtAGL', 'n/a')} ft AGL | "
+                f"quality={cap.get('quality', 'n/a')} | lat={cap.get('lat')} lon={cap.get('lon')}"
+            )
+    else:
+        lines.append("- No detection or weapon capabilities saved.")
+
+    lines.extend(["", "## 5. LAYER COVERAGE SUMMARY", ""])
+    if gap["domain_counts"]:
+        for domain, count in sorted(gap["domain_counts"].items()):
+            lines.append(f"- {domain}: {count}")
+    else:
+        lines.append("- No layer domains available.")
+
+    lines.extend(["", "## 6. THREAT AND IMPACT ANALYSIS", ""])
+    if impact:
+        lines.extend([
+            f"- Flight time: {impact.get('flight_time_s', 'n/a')} seconds",
+            f"- Distance: {impact.get('dist_km', 'n/a')} km",
+            f"- Warning level: {impact.get('warning_level', 'n/a')}",
+            f"- Physics model: {impact.get('physics_model', 'n/a')}",
+        ])
+        blast = impact.get("blast_radii") or {}
+        if blast:
+            lines.append(f"- Blast radii: lethal {blast.get('lethal_m')} m; severe {blast.get('severe_m')} m; moderate {blast.get('moderate_m')} m; light {blast.get('light_m')} m")
+        if impact.get("radar_detections"):
+            lines.append(f"- Radar detections: {len(impact.get('radar_detections'))}")
+    else:
+        lines.append("- No impact analysis saved. Run impact analysis to populate flight time, blast effects, radar timeline, and shelter windows.")
+
+    lines.extend(["", "## 7. GAP ANALYSIS", ""])
+    for finding in gap["findings"]:
+        lines.append(f"- {finding}")
+
+    if gap["blind_gaps"]:
+        lines.extend(["", "### Blind Gap Detail", ""])
+        for item in gap["blind_gaps"]:
+            lines.append(f"- {item.get('start_s')}s to {item.get('end_s')}s | duration={item.get('duration_s')}s | segment={item.get('segment', 'n/a')}")
+
+    lines.extend(["", "## 8. RECOMMENDED ACTIONS", ""])
+    for idx, rec in enumerate(gap["recommendations"], start=1):
+        lines.append(f"{idx}. {rec}")
+
+    lines.extend([
+        "",
+        "## 9. COMMANDER / PLANNER NOTES",
+        "",
+        "- Treat all automated calculations as planning estimates until validated against authoritative system performance data, terrain products, weather, ROE, and current intelligence.",
+        "- Re-run this scenario after any sensor relocation, threat change, weather degradation, or asset outage.",
+    ])
+
+    return "\n".join(lines)
 
 # ---------- endpoints ----------
 
@@ -392,6 +605,71 @@ async def check_intercepts(data: InterceptRequest):
                     "alt": point.get("alt", 0),
                 })
     return events
+
+
+# ─── Scenario Persistence + Report Publishing ───────────────────────────────
+
+@app.get("/api/scenarios")
+async def list_scenarios():
+    SCENARIO_DIR.mkdir(parents=True, exist_ok=True)
+    scenarios = []
+    for path in sorted(SCENARIO_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                scenarios.append(_scenario_summary(json.load(handle)))
+        except (json.JSONDecodeError, OSError):
+            continue
+    return {"scenarios": scenarios, "count": len(scenarios)}
+
+
+@app.post("/api/scenarios")
+async def save_scenario(payload: ScenarioPayload):
+    SCENARIO_DIR.mkdir(parents=True, exist_ok=True)
+    scenario_id = str(uuid.uuid4())
+    now = _utc_now_iso()
+    doc = {
+        "id": scenario_id,
+        "name": payload.name.strip() or "Untitled Scenario",
+        "description": payload.description.strip(),
+        "created_at": now,
+        "updated_at": now,
+        "state": payload.state,
+    }
+    with _scenario_path(scenario_id).open("w", encoding="utf-8") as handle:
+        json.dump(doc, handle, indent=2)
+    return {"status": "ok", "scenario": _scenario_summary(doc)}
+
+
+@app.get("/api/scenarios/{scenario_id}")
+async def get_scenario(scenario_id: str):
+    doc = _load_scenario_doc(scenario_id)
+    if not doc:
+        return {"status": "error", "detail": "scenario not found"}
+    return {"status": "ok", "scenario": doc}
+
+
+@app.delete("/api/scenarios/{scenario_id}")
+async def delete_scenario(scenario_id: str):
+    path = _scenario_path(scenario_id)
+    if not path.exists():
+        return {"status": "error", "detail": "scenario not found"}
+    path.unlink()
+    return {"status": "ok", "id": scenario_id}
+
+
+@app.get("/api/scenarios/{scenario_id}/report")
+async def get_scenario_report(scenario_id: str):
+    doc = _load_scenario_doc(scenario_id)
+    if not doc:
+        return {"status": "error", "detail": "scenario not found"}
+    gap = _gap_assessment(doc.get("state", {}))
+    return {
+        "status": "ok",
+        "scenario_id": scenario_id,
+        "generated_at": _utc_now_iso(),
+        "gap_analysis": gap,
+        "report_markdown": _format_report(doc),
+    }
 
 
 class ImpactAnalysisRequest(BaseModel):

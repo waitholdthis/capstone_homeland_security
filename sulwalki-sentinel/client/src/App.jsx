@@ -18,6 +18,13 @@ import { EXERCISE_BOUNDARIES } from './data/exerciseBoundaries';
 const BACKEND = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000';
 const WS_TRACKS_URL = import.meta.env.VITE_WS_TRACKS_URL ?? 'ws://localhost:8000/ws/tracks';
 const CESIUM_ION_TOKEN = import.meta.env.VITE_CESIUM_ION_TOKEN;
+const getInitialPanelPosition = (width, height, offsetX, offsetY) => {
+  if (typeof window === 'undefined') return { x: offsetX, y: offsetY };
+  return {
+    x: Math.max(8, window.innerWidth - width - offsetX),
+    y: Math.max(8, window.innerHeight - height - offsetY),
+  };
+};
 const DEFAULT_PLANNING_ENV = {
   visibility: 'clear',
   precipitation: 'none',
@@ -1159,6 +1166,7 @@ export default function App() {
   // Impact analysis state
   const [impactAnalysis, setImpactAnalysis] = useState(null);
   const [impactMissile, setImpactMissile] = useState(null);
+  const [impactPanelPosition, setImpactPanelPosition] = useState(() => getInitialPanelPosition(320, 520, 20, 20));
   const impactEntitiesRef = useRef([]);
   const impactAnimationRef = useRef({ raf: null, entity: null, startWall: null, path: [] });
   const impactClickRef = useRef(null); // first click = launch
@@ -1214,6 +1222,7 @@ export default function App() {
   const [intercepts, setIntercepts] = useState([]);
   const [threatIntel, setThreatIntel] = useState(null);
   const [simSensorEvents, setSimSensorEvents] = useState([]);
+  const [radarFeedPosition, setRadarFeedPosition] = useState(() => getInitialPanelPosition(310, 420, 20, 90));
   const simRef = useRef({
     path: [], paths: [], entities: [], cuasList: [], sensorEvents: [],
     threat: null, threatMode: 'uas', env: DEFAULT_PLANNING_ENV,
@@ -3170,6 +3179,8 @@ export default function App() {
       <ImpactWarningPanel
         analysis={impactAnalysis}
         missile={impactMissile}
+        position={impactPanelPosition}
+        onPositionChange={setImpactPanelPosition}
         onClose={() => {
           setImpactAnalysis(null);
           setImpactMissile(null);
@@ -3183,6 +3194,8 @@ export default function App() {
         events={simSensorEvents}
         simElapsed={simElapsed}
         visible={simActive && simSensorEvents.length > 0}
+        position={radarFeedPosition}
+        onPositionChange={setRadarFeedPosition}
       />
       {dataLinkVisible && (
         <DataLinkPanel

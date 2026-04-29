@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useDraggablePanel } from '../hooks/useDraggablePanel';
 
 const NATION_COLOR = {
   'US/NATO':        '#00BFFF',
@@ -133,8 +134,10 @@ function CoverageRow({ event }) {
   );
 }
 
-export default function RadarAlertFeed({ events = [], simElapsed = 0, visible = true }) {
+export default function RadarAlertFeed({ events = [], simElapsed = 0, visible = true, position, onPositionChange }) {
   const feedRef = useRef(null);
+  const panelRef = useRef(null);
+  const drag = useDraggablePanel({ position, onPositionChange, panelRef });
 
   // Auto-scroll to bottom as new detections arrive
   useEffect(() => {
@@ -158,8 +161,7 @@ export default function RadarAlertFeed({ events = [], simElapsed = 0, visible = 
   return (
     <div style={{
       position: 'absolute',
-      bottom: 90,
-      right: 20,
+      ...drag.style,
       width: 310,
       maxHeight: 420,
       background: 'rgba(3, 8, 15, 0.97)',
@@ -167,14 +169,16 @@ export default function RadarAlertFeed({ events = [], simElapsed = 0, visible = 
       zIndex: 18,
       display: 'flex',
       flexDirection: 'column',
-    }}>
+    }} ref={panelRef}>
       {/* Header */}
       <div style={{
         padding: '7px 10px',
         background: '#050F1A',
         borderBottom: '1px solid #0D3D55',
         flexShrink: 0,
-      }}>
+        cursor: 'move',
+        touchAction: 'none',
+      }} onPointerDown={drag.onPointerDown}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ color: '#00BFFF', fontSize: 10, fontFamily: 'monospace', fontWeight: 'bold', letterSpacing: '0.12em' }}>
             RADAR NETWORK ALERT FEED

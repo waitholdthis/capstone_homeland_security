@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useDraggablePanel } from '../hooks/useDraggablePanel';
 
 const ZONE_COLORS = {
   lethal:   '#FF0000',
@@ -43,10 +44,12 @@ function WarningBadge({ level, color }) {
   );
 }
 
-export default function ImpactWarningPanel({ analysis, missile, onClose }) {
+export default function ImpactWarningPanel({ analysis, missile, onClose, position, onPositionChange }) {
   const [elapsed, setElapsed] = useState(0);
   const startRef = useRef(0);
   const rafRef = useRef(null);
+  const panelRef = useRef(null);
+  const drag = useDraggablePanel({ position, onPositionChange, panelRef });
 
   useEffect(() => {
     if (!analysis) return;
@@ -94,15 +97,14 @@ export default function ImpactWarningPanel({ analysis, missile, onClose }) {
   return (
     <div style={{
       position: 'absolute',
-      top: 20,
-      right: 20,
+      ...drag.style,
       width: 320,
       background: 'rgba(3, 8, 15, 0.97)',
       border: `1px solid ${dynColor}88`,
       fontFamily: 'monospace',
       zIndex: 20,
       boxShadow: `0 0 24px ${dynColor}44`,
-    }}>
+    }} ref={panelRef}>
       {/* Header */}
       <div style={{
         padding: '8px 12px',
@@ -111,7 +113,9 @@ export default function ImpactWarningPanel({ analysis, missile, onClose }) {
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
-      }}>
+        cursor: 'move',
+        touchAction: 'none',
+      }} onPointerDown={drag.onPointerDown}>
         <div>
           <div style={{ color: dynColor, fontSize: 10, letterSpacing: '0.15em' }}>IMPACT WARNING SYSTEM</div>
           {missile && <div style={{ color: '#445566', fontSize: 9 }}>{missile.name}</div>}

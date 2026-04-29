@@ -200,6 +200,17 @@ function ensureTimedPath(path, speedMs = 250) {
   });
 }
 
+function resampleTimedPath(path, maxPoints = 240) {
+  if (!Array.isArray(path) || path.length <= maxPoints) return path;
+  const endTime = path[path.length - 1]?.time_s ?? 0;
+  if (endTime <= 0) return path.filter((_, index) => index % Math.ceil(path.length / maxPoints) === 0);
+
+  return Array.from({ length: maxPoints }, (_, index) => {
+    const t = index / (maxPoints - 1);
+    return pathPointAtTime(path, endTime * t);
+  }).filter(Boolean);
+}
+
 function radarHorizonKm(sensorHeightM, targetAltM) {
   const sensorTerm = Math.sqrt(Math.max(sensorHeightM, 0));
   const targetTerm = Math.sqrt(Math.max(targetAltM, 0));
@@ -1051,7 +1062,7 @@ export default function App() {
   const simRef = useRef({
     path: [], paths: [], entities: [], cuasList: [], sensorEvents: [],
     threat: null, threatMode: 'uas', env: DEFAULT_PLANNING_ENV,
-    alertedIds: new Set(), lastFusionUpdate: 0, startWall: null, speed: 1, raf: null,
+    alertedIds: new Set(), lastFusionUpdate: 0, startWall: null, speed: 1, raf: null, runId: 0,
   });
 
   const detectionLayerAssets = [...DETECTION_LAYER_ASSETS, ...customLayerAssets];
@@ -2497,37 +2508,6 @@ export default function App() {
     const simPaths = threatMode === 'uas'
       ? Array.from({ length: count }, (_, i) => makeErraticUASPath(path, selectedDrone, i))
       : [path];
-    const intel = estimateImpactIntelligence(simPaths, threat, threatMode, cuasList, planningEnv);
-
-    if (impactEstimateRef.current) {
-      viewer.entities.remove(impactEstimateRef.current);
-      impactEstimateRef.current = null;
-    }
-    if (intel) {
-      impactEstimateRef.current = viewer.entities.add({
-        position: Cesium.Cartesian3.fromDegrees(intel.target_lon, intel.target_lat, 0),
-        ellipse: {
-          semiMajorAxis: Math.max(intel.uncertainty_m, 15),
-          semiMinorAxis: Math.max(intel.monte_carlo?.impact_p50_m ?? intel.uncertainty_m * 0.55, 10),
-          material: new Cesium.ColorMaterialProperty(threatColor.withAlpha(0.12)),
-          outline: true,
-          outlineColor: threatColor.withAlpha(0.85),
-          outlineWidth: 2,
-          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-        },
-        label: {
-          text: `PREDICTED IMPACT\nP90 ${intel.uncertainty_m}m`,
-          font: 'bold 10px monospace',
-          fillColor: threatColor,
-          outlineColor: Cesium.Color.BLACK,
-          outlineWidth: 2,
-          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-          pixelOffset: new Cesium.Cartesian2(0, -22),
-          disableDepthTestDistance: Number.POSITIVE_INFINITY,
-        },
-      });
-    }
-
     // Draw glowing trail showing flight path
     if (Array.isArray(trailRef.current)) {
       trailRef.current.forEach(e => viewer.entities.remove(e));
@@ -2554,32 +2534,14 @@ export default function App() {
       });
       droneEntities.push(ent);
     }
-
-    // Map computeSensorEvents format → RadarAlertFeed format
-    const mappedSensorEvents = (intel?.events ?? []).map((e, idx, arr) => {
-      const sensor = cuasList.find(s => s.id === e.sensor_id);
-      return {
-        ...e,
-        time_s:     e.entry_time_s,
-        nation:     sensor?.nation ?? '?',
-        freq_band:  sensor?.frequencyBand ?? '?',
-        range_km:   e.closest_km,
-        p_detect:   e.confidence,
-        cue_alerts: (e.downstream_sensors ?? []).map(ds => ({
-          sensor_name: ds.sensor_name,
-          sensor_id:   ds.sensor_id ?? ds.sensor_name,
-          eta_s:       ds.eta_s,
-        })),
-        cued_by: idx > 0 ? arr[0].sensor_id : null,
-      };
-    });
+    const runId = Date.now();
 
     simRef.current = {
       path,
       paths: simPaths,
       entities: droneEntities,
       cuasList,
-      sensorEvents: mappedSensorEvents,
+      sensorEvents: [],
       threat,
       threatMode,
       env: planningEnv,
@@ -2588,13 +2550,14 @@ export default function App() {
       startWall: performance.now(),
       speed: simSpeed,
       raf: null,
+      runId,
     };
     setSimActive(true);
     setSimPlaying(true);
     setSimElapsed(0);
     setIntercepts([]);
-    setSimSensorEvents(mappedSensorEvents);
-    setThreatIntel(intel);
+    setSimSensorEvents([]);
+    setThreatIntel(null);
 
     // Kick off the animation loop immediately — no separate PLAY click needed
     const animPaths = simPaths;
@@ -2628,6 +2591,70 @@ export default function App() {
       simRef.current.raf = requestAnimationFrame(tick);
     };
     simRef.current.raf = requestAnimationFrame(tick);
+
+    window.setTimeout(() => {
+      if (simRef.current.runId !== runId) return;
+
+      try {
+        const analysisPaths = simPaths.map(simPath => resampleTimedPath(simPath, 240));
+        const intel = estimateImpactIntelligence(analysisPaths, threat, threatMode, cuasList, planningEnv);
+
+        if (simRef.current.runId !== runId) return;
+
+        if (impactEstimateRef.current) {
+          viewer.entities.remove(impactEstimateRef.current);
+          impactEstimateRef.current = null;
+        }
+        if (intel) {
+          impactEstimateRef.current = viewer.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(intel.target_lon, intel.target_lat, 0),
+            ellipse: {
+              semiMajorAxis: Math.max(intel.uncertainty_m, 15),
+              semiMinorAxis: Math.max(intel.monte_carlo?.impact_p50_m ?? intel.uncertainty_m * 0.55, 10),
+              material: new Cesium.ColorMaterialProperty(threatColor.withAlpha(0.12)),
+              outline: true,
+              outlineColor: threatColor.withAlpha(0.85),
+              outlineWidth: 2,
+              heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            },
+            label: {
+              text: `PREDICTED IMPACT\nP90 ${intel.uncertainty_m}m`,
+              font: 'bold 10px monospace',
+              fillColor: threatColor,
+              outlineColor: Cesium.Color.BLACK,
+              outlineWidth: 2,
+              style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+              pixelOffset: new Cesium.Cartesian2(0, -22),
+              disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            },
+          });
+        }
+
+        const mappedSensorEvents = (intel?.events ?? []).map((e, idx, arr) => {
+          const sensor = cuasList.find(s => s.id === e.sensor_id);
+          return {
+            ...e,
+            time_s:     e.entry_time_s,
+            nation:     sensor?.nation ?? '?',
+            freq_band:  sensor?.frequencyBand ?? '?',
+            range_km:   e.closest_km,
+            p_detect:   e.confidence,
+            cue_alerts: (e.downstream_sensors ?? []).map(ds => ({
+              sensor_name: ds.sensor_name,
+              sensor_id:   ds.sensor_id ?? ds.sensor_name,
+              eta_s:       ds.eta_s,
+            })),
+            cued_by: idx > 0 ? arr[0].sensor_id : null,
+          };
+        });
+
+        simRef.current.sensorEvents = mappedSensorEvents;
+        setSimSensorEvents(mappedSensorEvents);
+        setThreatIntel(intel);
+      } catch (err) {
+        console.error('simulation intelligence failed:', err);
+      }
+    }, 50);
   }, [threatMode, selectedDrone, selectedMissile, simSpeed, planningEnv]);
 
   // ---- Play / Pause ----
@@ -2714,6 +2741,7 @@ export default function App() {
       startWall: null,
       speed: 1,
       raf: null,
+      runId: 0,
     };
     setSimActive(false);
     setSimPlaying(false);

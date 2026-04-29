@@ -1,0 +1,19 @@
+{
+  "name": "MDPT Multi-Domain Planning Tool",
+  "short_name": "MDPT",
+  "description": "Multi-domain planning, line-of-sight, detection architecture, scenario reporting, and threat simulation tool.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#03080f",
+  "theme_color": "#03080f",
+  "orientation": "landscape",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

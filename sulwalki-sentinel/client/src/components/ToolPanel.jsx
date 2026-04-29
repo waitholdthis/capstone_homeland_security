@@ -380,8 +380,10 @@ export default function ToolPanel({
   dataLinkConnected,
   dataLinkTrackCount,
   dataLinkVisible,
+  dataLinkUrl,
   onToggleDataLink,
   kmzLayers,
+  kmzLoadStatus,
   onImportKmz,
   onRemoveKmzLayer,
   onToggleKmzLayer,
@@ -605,7 +607,7 @@ export default function ToolPanel({
         </button>
         {dataLinkConnected && (
           <div style={{ marginTop: 3, fontSize: 8, color: '#334455', fontFamily: 'monospace' }}>
-            ws://localhost:8000/ws/tracks &nbsp;·&nbsp; POST /api/tracks/ingest
+            {dataLinkUrl} &nbsp;·&nbsp; POST /api/tracks/ingest
           </div>
         )}
       </div>
@@ -1327,6 +1329,21 @@ export default function ToolPanel({
           </div>
         </label>
 
+        {kmzLoadStatus && (
+          <div style={{
+            marginTop: 6,
+            padding: '5px 7px',
+            background: kmzLoadStatus.level === 'error' ? '#331111' : kmzLoadStatus.level === 'warning' ? '#332600' : '#061422',
+            border: `1px solid ${kmzLoadStatus.level === 'error' ? '#AA3333' : kmzLoadStatus.level === 'warning' ? '#AA8800' : '#2A4A5A'}`,
+            color: kmzLoadStatus.level === 'error' ? '#FF7777' : kmzLoadStatus.level === 'warning' ? '#FFCC66' : '#77BBDD',
+            fontFamily: 'monospace',
+            fontSize: 8,
+            lineHeight: 1.4,
+          }}>
+            {kmzLoadStatus.message}
+          </div>
+        )}
+
         {/* Loaded layer list */}
         {kmzLayers.length > 0 && (
           <div style={{ marginTop: 6 }}>
@@ -1376,6 +1393,9 @@ export default function ToolPanel({
                   title={layer.name}
                 >
                   {layer.name}
+                  {Number.isFinite(layer.entityCount) && (
+                    <span style={{ color: '#334455' }}> · {layer.entityCount}</span>
+                  )}
                 </span>
 
                 {/* Remove */}

@@ -149,7 +149,7 @@ export default function DataLinkPanel({ connected, tracks, connectionUrl }) {
         <div style={{ color: '#2A3A4A', fontSize: 8, lineHeight: 1.5 }}>
           POST JSON → /api/tracks/ingest<br />
           POST CoT XML → /api/tracks/ingest/cot<br />
-          WS → ws://localhost:8000/ws/tracks
+          WS → {connectionUrl}
         </div>
       </div>
 

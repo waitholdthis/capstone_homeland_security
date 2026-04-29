@@ -15,8 +15,8 @@ import { RADAR_SYSTEMS } from './data/radarSystems';
 import { GRAPHIC_TYPE_MAP } from './data/planningGraphics';
 import { EXERCISE_BOUNDARIES } from './data/exerciseBoundaries';
 
-const BACKEND = 'http://localhost:8000';
-const WS_TRACKS_URL = 'ws://localhost:8000/ws/tracks';
+const BACKEND = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000';
+const WS_TRACKS_URL = import.meta.env.VITE_WS_TRACKS_URL ?? 'ws://localhost:8000/ws/tracks';
 const CESIUM_ION_TOKEN = import.meta.env.VITE_CESIUM_ION_TOKEN;
 const DEFAULT_PLANNING_ENV = {
   visibility: 'clear',
@@ -1193,6 +1193,8 @@ export default function App() {
   // KMZ / KML layer import
   const [kmzLayers, setKmzLayers] = useState([]);             // { id, name, visible }
   const kmzSourcesRef = useRef({});                           // id → CesiumKmlDataSource
+  const kmzObjectUrlsRef = useRef({});
+  const [kmzLoadStatus, setKmzLoadStatus] = useState(null);
 
   // Missile sim: first click = launch, second click = target
   const missileClickRef = useRef(null); // { lat, lon, alt }
@@ -3000,19 +3002,44 @@ export default function App() {
   const loadKmzFile = useCallback(async (file) => {
     const viewer = viewerRef.current;
     if (!viewer) return;
+    const id = `kmz-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const objectUrl = URL.createObjectURL(file);
+    setKmzLoadStatus({ level: 'loading', message: `Loading ${file.name}...` });
     try {
-      const dataSource = await Cesium.KmlDataSource.load(file, {
+      const dataSource = await Cesium.KmlDataSource.load(objectUrl, {
         camera: viewer.scene.camera,
         canvas: viewer.scene.canvas,
         clampToGround: true,
+        sourceUri: objectUrl,
       });
-      const id = `kmz-${Date.now()}`;
       await viewer.dataSources.add(dataSource);
       kmzSourcesRef.current[id] = dataSource;
-      setKmzLayers(prev => [...prev, { id, name: file.name, visible: true }]);
-      viewer.flyTo(dataSource).catch(() => {});
+      kmzObjectUrlsRef.current[id] = objectUrl;
+
+      const entityCount = dataSource.entities.values.length;
+      setKmzLayers(prev => [...prev, { id, name: file.name, visible: true, entityCount }]);
+      setKmzLoadStatus({
+        level: entityCount > 0 ? 'success' : 'warning',
+        message: entityCount > 0
+          ? `Loaded ${file.name} (${entityCount} item${entityCount === 1 ? '' : 's'}).`
+          : `Loaded ${file.name}, but no visible placemarks were found.`,
+      });
+
+      window.setTimeout(() => setKmzLoadStatus(null), 4500);
+      const flew = await viewer.flyTo(dataSource, { duration: 1.0 }).then(() => true).catch(() => false);
+      if (!flew && entityCount > 0) {
+        const first = dataSource.entities.values.find(entity => entity.position);
+        if (first) viewer.flyTo(first, { duration: 1.0 }).catch(() => {});
+      }
+      viewer.scene.requestRender();
     } catch (err) {
       console.error('KMZ load failed:', err);
+      URL.revokeObjectURL(objectUrl);
+      setKmzLoadStatus({
+        level: 'error',
+        message: `Could not load ${file.name}. Check that it is valid KML/KMZ.`,
+      });
+      window.setTimeout(() => setKmzLoadStatus(null), 6500);
     }
   }, []);
 
@@ -3020,7 +3047,9 @@ export default function App() {
     const viewer = viewerRef.current;
     const ds = kmzSourcesRef.current[id];
     if (viewer && ds) viewer.dataSources.remove(ds, true);
+    if (kmzObjectUrlsRef.current[id]) URL.revokeObjectURL(kmzObjectUrlsRef.current[id]);
     delete kmzSourcesRef.current[id];
+    delete kmzObjectUrlsRef.current[id];
     setKmzLayers(prev => prev.filter(l => l.id !== id));
   }, []);
 
@@ -3100,8 +3129,10 @@ export default function App() {
         dataLinkConnected={dataLinkConnected}
         dataLinkTrackCount={Object.keys(externalTracks).length}
         dataLinkVisible={dataLinkVisible}
+        dataLinkUrl={WS_TRACKS_URL}
         onToggleDataLink={() => setDataLinkVisible(v => !v)}
         kmzLayers={kmzLayers}
+        kmzLoadStatus={kmzLoadStatus}
         onImportKmz={loadKmzFile}
         onRemoveKmzLayer={removeKmzLayer}
         onToggleKmzLayer={toggleKmzLayerVisibility}

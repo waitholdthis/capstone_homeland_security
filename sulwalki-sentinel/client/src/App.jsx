@@ -2388,7 +2388,7 @@ export default function App() {
   }, [mode, faction, selectedUnit, selectedCUAS, selectedLayerAsset, selectedDrone, selectedMissile, threatMode, selectedGraphicType, graphicColor, graphicLabel, refreshWaypointPreview, selectMapItem, startImpactAnimation, stopImpactAnimation, finishGraphic]);
 
   // ---- Launch simulation ----
-  const handleSimulate = useCallback(async () => {
+  const handleSimulate = useCallback(() => {
     const viewer = viewerRef.current;
     if (!viewer || waypointsRef.current.length < 2) return;
 
@@ -2402,91 +2402,18 @@ export default function App() {
     setIntercepts([]);
     setSimSensorEvents([]);
 
-    let path;
+    const threat = threatMode === 'uas' ? (selectedDrone ?? DRONE_TYPES[0]) : (selectedMissile ?? MISSILE_THREATS[0]);
+    const speedMs = threatMode === 'uas'
+      ? Math.max(threat.speedMs ?? 25, 1)
+      : Math.max((threat.speedMach ?? 3) * 343, 1);
+    const path = ensureTimedPath(
+      threatMode === 'uas'
+        ? buildClientUASPath(waypointsRef.current, speedMs)
+        : getMissilePreviewPath(waypointsRef.current[0], waypointsRef.current[1], threat),
+      speedMs,
+    );
 
-    try {
-      if (threatMode === 'uas') {
-        const drone = selectedDrone ?? DRONE_TYPES[0];
-        const wps = waypointsRef.current;
-
-        // Sample terrain — wrapped so a missing/unready terrain provider never kills the sim
-        const allCarts = [];
-        for (let seg = 0; seg < wps.length - 1; seg++) {
-          for (let i = 0; i < 20; i++) {
-            const t = i / 20;
-            allCarts.push(Cesium.Cartographic.fromDegrees(
-              wps[seg].lon + (wps[seg + 1].lon - wps[seg].lon) * t,
-              wps[seg].lat + (wps[seg + 1].lat - wps[seg].lat) * t,
-            ));
-          }
-        }
-        allCarts.push(Cesium.Cartographic.fromDegrees(wps[wps.length - 1].lon, wps[wps.length - 1].lat));
-
-        let terrainHeights;
-        try {
-          const sampledAll = await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, allCarts);
-          terrainHeights = sampledAll.map(p => p.height ?? 0);
-        } catch {
-          // Terrain provider not ready or no availability — use 0 (MSL), AGL offset still applied by backend
-          terrainHeights = allCarts.map(() => 0);
-        }
-
-        try {
-          const res = await fetch(`${BACKEND}/simulate-path`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ waypoints: wps, speed_ms: drone.speedMs, agl_meters: drone.aglMeters, terrain_heights: terrainHeights }),
-          });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          path = await res.json();
-        } catch {
-          path = buildClientUASPath(wps, drone.speedMs);
-        }
-
-        // Guard: ensure path is a non-empty array
-        if (!Array.isArray(path) || path.length < 2) {
-          path = buildClientUASPath(wps, drone.speedMs);
-        }
-        path = ensureTimedPath(path, drone.speedMs);
-
-      } else {
-        // Missile: physics-accurate trajectory via ICAO+RK4
-        const missile = selectedMissile ?? MISSILE_THREATS[0];
-        const launch = waypointsRef.current[0];
-        const target = waypointsRef.current[1];
-        const missileSpeedMs = (missile.speedMach ?? 3.0) * 343;
-        try {
-          const res = await fetch(`${BACKEND}/physics-trajectory`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              launch_lat: launch.lat, launch_lon: launch.lon, launch_alt: launch.alt ?? 0,
-              target_lat: target.lat, target_lon: target.lon, target_alt: target.alt ?? 0,
-              missile_id: missile.id ?? '_default_ballistic',
-              trajectory_type: missile.type ?? 'ballistic',
-              speed_mach: missile.speedMach ?? 3.0,
-              apogee_km: missile.apogeeKm ?? 20.0,
-              warhead_kg: missile.warheadKg ?? 100.0,
-              cep_meters: missile.cepMeters ?? 50.0,
-            }),
-          });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const phys = await res.json();
-          path = phys.trajectory_path ?? [];
-        } catch {
-          path = await fetchMissilePath(missile, launch, target);
-        }
-
-        if (!Array.isArray(path) || path.length < 2) {
-          path = buildClientBallisticPath(
-            waypointsRef.current[0], waypointsRef.current[1],
-            (selectedMissile?.apogeeKm ?? 20), (selectedMissile?.speedMach ?? 3),
-          );
-        }
-        path = ensureTimedPath(path, missileSpeedMs);
-      }
-    } catch (err) {
-      console.error('handleSimulate failed:', err);
-      return;
-    }
+    if (path.length < 2) return;
 
     // Collect sensors: placed C-UAS + pre-seeded radar network
     const placedSensors = [...new Map(
@@ -2502,7 +2429,6 @@ export default function App() {
     const cuasList = [...placedSensors, ...radarSensors];
 
     // Create threat dot entity/entities
-    const threat = threatMode === 'uas' ? selectedDrone : selectedMissile;
     const threatColor = cesiumColorFromHex(threat?.color ?? '#FF3300');
     const count = threatMode === 'uas' ? (selectedDrone?.count ?? 1) : 1;
     const simPaths = threatMode === 'uas'
@@ -2520,15 +2446,26 @@ export default function App() {
     placedRef.current.push(...trailRef.current);
 
     const droneEntities = [];
+    const threatLabel = threat?.name ?? (threatMode === 'uas' ? 'UAS' : 'THREAT');
     for (let i = 0; i < count; i++) {
       const start = simPaths[i][0];
       const ent = viewer.entities.add({
         position: Cesium.Cartesian3.fromDegrees(start.lon, start.lat, start.alt),
         point: {
-          pixelSize: threat?.pixelSize ?? 12,
+          pixelSize: Math.max(threat?.pixelSize ?? 12, threatMode === 'missile' ? 18 : 14),
           color: threatColor,
           outlineColor: Cesium.Color.WHITE,
-          outlineWidth: 1,
+          outlineWidth: 2,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        label: {
+          text: `${threatLabel}\nLAUNCHED`,
+          font: 'bold 12px monospace',
+          fillColor: threatColor,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 3,
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          pixelOffset: new Cesium.Cartesian2(0, -28),
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
       });
@@ -2558,6 +2495,8 @@ export default function App() {
     setIntercepts([]);
     setSimSensorEvents([]);
     setThreatIntel(null);
+    viewer.flyTo([...droneEntities, ...trailRef.current], { duration: 0.75 }).catch(() => {});
+    viewer.scene.requestRender();
 
     // Kick off the animation loop immediately — no separate PLAY click needed
     const animPaths = simPaths;
@@ -2575,6 +2514,7 @@ export default function App() {
         const pt = pathPointAtTime(animPaths[i] ?? animPaths[0], elapsed);
         if (!pt) return;
         ent.position = Cesium.Cartesian3.fromDegrees(pt.lon, pt.lat, pt.alt);
+        if (ent.label) ent.label.text = `${threatLabel}\nT+${elapsed.toFixed(1)}s`;
         simRef.current.sensorEvents
           .filter(ev => ev.trackIndex === i && ev.time_s <= elapsed)
           .forEach(ev => {
@@ -2588,6 +2528,7 @@ export default function App() {
             }]);
           });
       });
+      viewer.scene.requestRender();
       simRef.current.raf = requestAnimationFrame(tick);
     };
     simRef.current.raf = requestAnimationFrame(tick);
@@ -2966,44 +2907,4 @@ function getMissilePreviewPath(launch, target, missile) {
       alt: (launch.alt + target.alt) / 2 + (missile.apogeeKm * 1000),
     };
   });
-}
-
-async function fetchMissilePath(missile, launch, target) {
-  const endpoints = {
-    ballistic: '/simulate-ballistic',
-    rocket:    '/simulate-rocket',
-    hypersonic:'/simulate-hypersonic',
-    cruise:    '/simulate-cruise-missile',
-  };
-  const endpoint = endpoints[missile.type] ?? '/simulate-ballistic';
-
-  if (missile.type === 'cruise') {
-    const wps = [
-      { lat: launch.lat, lon: launch.lon, alt: launch.alt },
-      { lat: target.lat, lon: target.lon, alt: target.alt },
-    ];
-    try {
-      const res = await fetch(`${BACKEND}${endpoint}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ waypoints: wps, speed_mach: missile.speedMach, agl_meters: missile.apogeeKm * 1000, terrain_heights: [launch.alt, target.alt] }),
-      });
-      return await res.json();
-    } catch {
-      return getMissilePreviewPath(launch, target, missile);
-    }
-  }
-
-  try {
-    const res = await fetch(`${BACKEND}${endpoint}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        launch_lat: launch.lat, launch_lon: launch.lon, launch_alt: launch.alt,
-        target_lat: target.lat, target_lon: target.lon, target_alt: target.alt,
-        apogee_km: missile.apogeeKm, speed_mach: missile.speedMach,
-      }),
-    });
-    return await res.json();
-  } catch {
-    return getMissilePreviewPath(launch, target, missile);
-  }
 }

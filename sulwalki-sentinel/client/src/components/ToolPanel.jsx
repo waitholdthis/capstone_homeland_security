@@ -10,6 +10,7 @@ import { MISSILE_THREATS, THREAT_LEVEL_COLORS, TRAJ_LABELS, TRAJ_COLORS } from '
 import {
   GRAPHIC_TYPES, PHASE_LINE_NAMES, GRAPHIC_COLOR_PRESETS,
 } from '../data/planningGraphics';
+import { EXERCISE_BOUNDARIES } from '../data/exerciseBoundaries';
 
 const BTN = ({ active, onClick, children }) => (
   <button
@@ -370,6 +371,12 @@ export default function ToolPanel({
   onClearAll,
   radarNetworkVisible,
   onToggleRadarNetwork,
+  countryBoundariesVisible,
+  stateBoundariesVisible,
+  onToggleCountryBoundaries,
+  onToggleStateBoundaries,
+  exerciseBoundaryNames,
+  onRenameExerciseBoundary,
   dataLinkConnected,
   dataLinkTrackCount,
   dataLinkVisible,
@@ -508,6 +515,69 @@ export default function ToolPanel({
           </div>
         )}
       </div>
+
+      <Section title="Exercise Boundaries">
+        <div style={{ color: '#667788', fontFamily: 'monospace', fontSize: 9, lineHeight: 1.5, marginBottom: 8 }}>
+          Toggle country and state/region overlays. Rename labels here for exercise control names.
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 8 }}>
+          <button
+            onClick={onToggleCountryBoundaries}
+            style={{
+              padding: '6px 5px',
+              background: countryBoundariesVisible ? '#00BFFF18' : 'transparent',
+              border: `1px solid ${countryBoundariesVisible ? '#00BFFF' : '#223344'}`,
+              color: countryBoundariesVisible ? '#00BFFF' : '#556677',
+              fontFamily: 'monospace',
+              fontSize: 9,
+              cursor: 'pointer',
+            }}
+          >
+            {countryBoundariesVisible ? '◆ COUNTRY' : '◇ COUNTRY'}
+          </button>
+          <button
+            onClick={onToggleStateBoundaries}
+            style={{
+              padding: '6px 5px',
+              background: stateBoundariesVisible ? '#39FF1418' : 'transparent',
+              border: `1px solid ${stateBoundariesVisible ? '#39FF14' : '#223344'}`,
+              color: stateBoundariesVisible ? '#39FF14' : '#556677',
+              fontFamily: 'monospace',
+              fontSize: 9,
+              cursor: 'pointer',
+            }}
+          >
+            {stateBoundariesVisible ? '◆ STATE' : '◇ STATE'}
+          </button>
+        </div>
+        <div style={{ maxHeight: 160, overflowY: 'auto', paddingRight: 3 }}>
+          {EXERCISE_BOUNDARIES.map(boundary => (
+            <label key={boundary.id} style={{
+              display: 'block',
+              color: boundary.type === 'country' ? '#88CCFF' : '#88FFAA',
+              fontSize: 8,
+              marginBottom: 6,
+            }}>
+              {boundary.type === 'country' ? 'COUNTRY' : 'STATE/REGION'} · {boundary.defaultName}
+              <input
+                value={exerciseBoundaryNames[boundary.id] ?? boundary.defaultName}
+                onChange={event => onRenameExerciseBoundary(boundary.id, event.target.value)}
+                style={{
+                  width: '100%',
+                  boxSizing: 'border-box',
+                  marginTop: 2,
+                  background: '#050D18',
+                  border: '1px solid #223344',
+                  color: '#D9ECFF',
+                  fontFamily: 'monospace',
+                  fontSize: 10,
+                  padding: '4px 5px',
+                }}
+              />
+            </label>
+          ))}
+        </div>
+      </Section>
 
       {/* Data Link toggle */}
       <div style={{ marginBottom: 14 }}>

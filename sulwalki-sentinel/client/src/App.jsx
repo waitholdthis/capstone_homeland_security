@@ -13,6 +13,7 @@ import { DRONE_TYPES } from './data/droneTypes';
 import { MISSILE_THREATS } from './data/missileThreat';
 import { RADAR_SYSTEMS } from './data/radarSystems';
 import { GRAPHIC_TYPE_MAP } from './data/planningGraphics';
+import { EXERCISE_BOUNDARIES } from './data/exerciseBoundaries';
 
 const BACKEND = 'http://localhost:8000';
 const WS_TRACKS_URL = 'ws://localhost:8000/ws/tracks';
@@ -1115,6 +1116,14 @@ export default function App() {
   const [radarNetworkVisible, setRadarNetworkVisible] = useState(true);
   const radarEntitiesRef = useRef([]);
 
+  // Exercise boundaries
+  const [countryBoundariesVisible, setCountryBoundariesVisible] = useState(true);
+  const [stateBoundariesVisible, setStateBoundariesVisible] = useState(true);
+  const [exerciseBoundaryNames, setExerciseBoundaryNames] = useState(() => Object.fromEntries(
+    EXERCISE_BOUNDARIES.map(boundary => [boundary.id, boundary.defaultName])
+  ));
+  const boundaryEntitiesRef = useRef([]);
+
   // Planning graphics
   const [selectedGraphicType, setSelectedGraphicType] = useState('phase-line');
   const [graphicLabel, setGraphicLabel] = useState('PL BLUE');
@@ -1743,6 +1752,60 @@ export default function App() {
       radarEntitiesRef.current.push(dome, marker);
     });
   }, [radarNetworkVisible]);
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+
+    boundaryEntitiesRef.current.forEach(entity => viewer.entities.remove(entity));
+    boundaryEntitiesRef.current = [];
+
+    EXERCISE_BOUNDARIES.forEach(boundary => {
+      const visible = boundary.type === 'country' ? countryBoundariesVisible : stateBoundariesVisible;
+      if (!visible) return;
+
+      const color = cesiumColorFromHex(boundary.color);
+      boundary.lines.forEach((line, index) => {
+        boundaryEntitiesRef.current.push(viewer.entities.add({
+          polyline: {
+            positions: line.map(([lat, lon]) => Cesium.Cartesian3.fromDegrees(lon, lat, 250)),
+            width: boundary.type === 'country' ? 3 : 2,
+            material: boundary.type === 'country'
+              ? new Cesium.PolylineGlowMaterialProperty({ glowPower: 0.18, color })
+              : new Cesium.PolylineDashMaterialProperty({ color: color.withAlpha(0.9), dashLength: 14 }),
+            clampToGround: true,
+          },
+          properties: {
+            layer: 'exercise-boundary',
+            boundaryId: boundary.id,
+            segment: index,
+          },
+        }));
+      });
+
+      boundaryEntitiesRef.current.push(viewer.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(boundary.labelPoint.lon, boundary.labelPoint.lat, boundary.type === 'country' ? 1400 : 900),
+        label: {
+          text: exerciseBoundaryNames[boundary.id] ?? boundary.defaultName,
+          font: boundary.type === 'country' ? 'bold 13px monospace' : 'bold 10px monospace',
+          fillColor: color,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 3,
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          scaleByDistance: boundary.type === 'country'
+            ? new Cesium.NearFarScalar(5e4, 1.0, 8e5, 0.35)
+            : new Cesium.NearFarScalar(5e4, 0.9, 5e5, 0.0),
+        },
+        properties: {
+          layer: 'exercise-boundary-label',
+          boundaryId: boundary.id,
+        },
+      }));
+    });
+
+    viewer.scene.requestRender();
+  }, [countryBoundariesVisible, stateBoundariesVisible, exerciseBoundaryNames]);
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -2912,6 +2975,12 @@ export default function App() {
         onClearAll={handleClearAll}
         radarNetworkVisible={radarNetworkVisible}
         onToggleRadarNetwork={() => setRadarNetworkVisible(v => !v)}
+        countryBoundariesVisible={countryBoundariesVisible}
+        stateBoundariesVisible={stateBoundariesVisible}
+        onToggleCountryBoundaries={() => setCountryBoundariesVisible(v => !v)}
+        onToggleStateBoundaries={() => setStateBoundariesVisible(v => !v)}
+        exerciseBoundaryNames={exerciseBoundaryNames}
+        onRenameExerciseBoundary={(id, name) => setExerciseBoundaryNames(prev => ({ ...prev, [id]: name }))}
         dataLinkConnected={dataLinkConnected}
         dataLinkTrackCount={Object.keys(externalTracks).length}
         dataLinkVisible={dataLinkVisible}

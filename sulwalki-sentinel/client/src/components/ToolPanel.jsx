@@ -464,7 +464,7 @@ export default function ToolPanel({
       {/* Header */}
       <div style={{ marginBottom: 16 }}>
         <div style={{ color: '#00FF7F', fontFamily: 'monospace', fontSize: 13, fontWeight: 'bold', letterSpacing: '0.12em' }}>
-          SUWALKI SENTINEL
+          MDPT
         </div>
         <div style={{ color: '#334455', fontFamily: 'monospace', fontSize: 9, letterSpacing: '0.08em' }}>
           MULTI-DOMAIN PLANNING TOOL v2.0 — C-UAS GRID

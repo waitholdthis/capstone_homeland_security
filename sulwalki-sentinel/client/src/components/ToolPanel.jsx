@@ -282,7 +282,7 @@ function UASThreatPanel({ selectedDrone, setSelectedDrone, waypointCount }) {
 }
 
 // Group the systems by type for organized display
-const TYPE_ORDER = ['kinetic', 'laser', 'hpm', 'rf-jam', 'rf-takeover', 'net', 'radar', 'detection', 'command'];
+const TYPE_ORDER = ['strategic', 'kinetic', 'laser', 'hpm', 'rf-jam', 'rf-takeover', 'net', 'radar', 'detection', 'command'];
 
 function groupByType(systems) {
   const groups = {};
@@ -386,7 +386,7 @@ export default function ToolPanel({
   onFinishGraphic,
   onUndoGraphicPoint,
 }) {
-  const [expandedType, setExpandedType] = useState('kinetic');
+  const [expandedType, setExpandedType] = useState('strategic');
   const [expandedTraj, setExpandedTraj] = useState('ballistic');
   const [expandedImpactTraj, setExpandedImpactTraj] = useState('ballistic');
   const [showCustomLayerForm, setShowCustomLayerForm] = useState(false);
@@ -465,7 +465,7 @@ export default function ToolPanel({
       <Section title="Mode">
         <BTN active={mode === 'los'} onClick={() => setMode('los')}>[01] LOS ANALYSIS</BTN>
         <BTN active={mode === 'place-unit'} onClick={() => setMode('place-unit')}>[02] PLACE UNIT</BTN>
-        <BTN active={mode === 'place-cuas'} onClick={() => setMode('place-cuas')}>[03] PLACE C-UAS SYSTEM</BTN>
+        <BTN active={mode === 'place-cuas'} onClick={() => setMode('place-cuas')}>[03] PLACE C-UAS / IAMD</BTN>
         <BTN active={mode === 'draw-path'} onClick={() => setMode('draw-path')}>[04] SIMULATE THREAT</BTN>
         <BTN active={mode === 'impact-analysis'} onClick={() => setMode('impact-analysis')}>[05] IMPACT ANALYSIS</BTN>
         <BTN active={mode === 'place-layer'} onClick={() => setMode('place-layer')}>[06] DETECTION LAYERS</BTN>
@@ -765,6 +765,9 @@ export default function ToolPanel({
       {/* ── C-UAS PLACEMENT ── */}
       {mode === 'place-cuas' && (
         <>
+          <div style={{ color: '#667788', fontFamily: 'monospace', fontSize: 9, lineHeight: 1.5, marginBottom: 8 }}>
+            Place tactical C-UAS, air defense, and strategic IAMD/BMD capabilities such as Aegis, THAAD, and Patriot.
+          </div>
           {/* Legend */}
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 8, fontFamily: 'monospace' }}>

@@ -305,6 +305,7 @@ function radarHorizonKm(sensorHeightM, targetAltM) {
 function sensorTypeQuality(sensorType) {
   const qualities = {
     radar: 0.92,
+    strategic: 0.9,
     kinetic: 0.82,
     laser: 0.78,
     rf: 0.68,
@@ -319,6 +320,7 @@ function sensorTypeQuality(sensorType) {
 }
 
 function detectionDomainsForSystem(system) {
+  if (system?.domains?.length) return system.domains;
   if (system?.domain) return [system.domain];
   const text = `${system?.type ?? ''} ${system?.name ?? ''} ${system?.description ?? ''}`.toLowerCase();
   const domains = new Set();
@@ -2057,6 +2059,7 @@ export default function App() {
             domains: detectionDomainsForSystem(selectedCUAS),
             rangeKm: selectedCUAS.rangeKm,
             altitudeFtAGL: selectedCUAS.altitudeFtAGL,
+            quality: selectedCUAS.quality,
             lat,
             lon,
             terrainAlt: cartographic.height ?? 0,
@@ -2085,6 +2088,7 @@ export default function App() {
             domains: detectionDomainsForSystem(selectedCUAS),
             rangeKm: selectedCUAS.rangeKm,
             altitudeFtAGL: selectedCUAS.altitudeFtAGL,
+            quality: selectedCUAS.quality,
             lat,
             lon,
             terrainAlt: cartographic.height ?? 0,

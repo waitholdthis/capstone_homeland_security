@@ -997,6 +997,12 @@ function markDraggable(entity, options = {}) {
   return entity;
 }
 
+function setEntityLabelText(entity, text) {
+  if (!entity?.label) return;
+  entity.label.text = text;
+  entity._deleteLabel = text;
+}
+
 function updateEntityMapPosition(entity, lat, lon, alt, cartesian) {
   const nextPosition = cartesian ?? Cesium.Cartesian3.fromDegrees(lon, lat, alt);
   entity.position = nextPosition;
@@ -1210,9 +1216,26 @@ export default function App() {
       group: entity._dragGroup,
       kind: entity._dragKind,
       label: entity._deleteLabel ?? entity._dragKind ?? 'map item',
+      editableLabel: entity._dragKind === 'unit',
     };
     selectedMapItemRef.current = item;
     setSelectedMapItem(item);
+  }, []);
+
+  const renameSelectedMapItem = useCallback((name) => {
+    const viewer = viewerRef.current;
+    const selected = selectedMapItemRef.current;
+    const label = name.trim();
+    if (!viewer || !selected || !selected.editableLabel || !label) return;
+
+    viewer.entities.values
+      .filter(entity => entity._dragGroup === selected.group)
+      .forEach(entity => setEntityLabelText(entity, label));
+
+    const next = { ...selected, label };
+    selectedMapItemRef.current = next;
+    setSelectedMapItem(next);
+    viewer.scene.requestRender();
   }, []);
 
   const deleteSelectedMapItem = useCallback(() => {
@@ -2003,11 +2026,12 @@ export default function App() {
         const image = new Image();
         image.src = canvas.toDataURL();
         await new Promise(r => { image.onload = r; });
+        const dragGroup = makeDragGroup('unit');
         placedRef.current.push(markDraggable(viewer.entities.add({
           position: cartesian,
           billboard: { image, verticalOrigin: Cesium.VerticalOrigin.BOTTOM, scale: 1.0, disableDepthTestDistance: Number.POSITIVE_INFINITY },
           label: { text: selectedUnit.label, font: '11px monospace', pixelOffset: new Cesium.Cartesian2(0, -(canvas.height + 4)), fillColor: faction === FACTIONS.FRIENDLY ? Cesium.Color.CYAN : Cesium.Color.RED, outlineColor: Cesium.Color.BLACK, outlineWidth: 2, style: Cesium.LabelStyle.FILL_AND_OUTLINE },
-        }), { kind: 'unit', label: selectedUnit.label }));
+        }), { kind: 'unit', group: dragGroup, label: selectedUnit.label }));
         return;
       }
 
@@ -2903,37 +2927,12 @@ export default function App() {
         onUndoGraphicPoint={undoLastGraphicPoint}
       />
       {selectedMapItem && (
-        <div style={{
-          position: 'absolute',
-          top: 20,
-          left: 320,
-          zIndex: 16,
-          background: 'rgba(3, 8, 15, 0.94)',
-          border: '1px solid #FFAA0044',
-          color: '#FFAA00',
-          fontFamily: 'monospace',
-          fontSize: 11,
-          padding: '8px 10px',
-          boxShadow: '0 0 18px #FFAA0022',
-        }}>
-          SELECTED: <span style={{ color: '#F2D38A' }}>{selectedMapItem.label}</span>
-          <button
-            onClick={deleteSelectedMapItem}
-            style={{
-              marginLeft: 10,
-              background: '#331111',
-              border: '1px solid #AA3333',
-              color: '#FF7777',
-              fontFamily: 'monospace',
-              fontSize: 10,
-              padding: '3px 7px',
-              cursor: 'pointer',
-            }}
-          >
-            DELETE
-          </button>
-          <span style={{ color: '#667788', marginLeft: 8 }}>or press Del</span>
-        </div>
+        <SelectedMapItemPanel
+          key={selectedMapItem.group}
+          item={selectedMapItem}
+          onDelete={deleteSelectedMapItem}
+          onRename={renameSelectedMapItem}
+        />
       )}
       <SimulationControls
         active={simActive}
@@ -2978,6 +2977,85 @@ export default function App() {
           pending={losPending}
           awaitingTarget={losAwaitingTarget}
         />
+      )}
+    </div>
+  );
+}
+
+function SelectedMapItemPanel({ item, onDelete, onRename }) {
+  const [draft, setDraft] = useState(item.label ?? '');
+
+  const submitRename = (event) => {
+    event.preventDefault();
+    onRename(draft);
+  };
+
+  return (
+    <div style={{
+      position: 'absolute',
+      top: 20,
+      left: 320,
+      zIndex: 16,
+      background: 'rgba(3, 8, 15, 0.94)',
+      border: '1px solid #FFAA0044',
+      color: '#FFAA00',
+      fontFamily: 'monospace',
+      fontSize: 11,
+      padding: '8px 10px',
+      boxShadow: '0 0 18px #FFAA0022',
+      minWidth: item.editableLabel ? 360 : undefined,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span>
+          SELECTED: <span style={{ color: '#F2D38A' }}>{item.label}</span>
+        </span>
+        <button
+          onClick={onDelete}
+          style={{
+            background: '#331111',
+            border: '1px solid #AA3333',
+            color: '#FF7777',
+            fontFamily: 'monospace',
+            fontSize: 10,
+            padding: '3px 7px',
+            cursor: 'pointer',
+          }}
+        >
+          DELETE
+        </button>
+        <span style={{ color: '#667788' }}>or press Del</span>
+      </div>
+      {item.editableLabel && (
+        <form onSubmit={submitRename} style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+          <input
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            aria-label="Unit name"
+            style={{
+              flex: 1,
+              background: '#050D18',
+              border: '1px solid #223344',
+              color: '#D9ECFF',
+              fontFamily: 'monospace',
+              fontSize: 10,
+              padding: '5px 6px',
+            }}
+          />
+          <button
+            type="submit"
+            style={{
+              background: '#113322',
+              border: '1px solid #00AA66',
+              color: '#00FF99',
+              fontFamily: 'monospace',
+              fontSize: 10,
+              padding: '5px 8px',
+              cursor: 'pointer',
+            }}
+          >
+            RENAME
+          </button>
+        </form>
       )}
     </div>
   );
